@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#17211f">
+  <title>Ivory Digital Studio</title>
+  <link rel="stylesheet" href="/styles.css?v=phase-one">
+</head>
+<body>
+  <section id="auth-view" class="auth-shell">
+    <header class="public-brand"><span class="brand-mark">ID</span><div><strong>Ivory Digital</strong><small>Booking Studio</small></div></header>
+    <article id="auth-card" class="auth-card">
+      <div class="eyebrow">YOUR PRIVATE STUDIO</div>
+      <h1>Welcome back</h1>
+      <p class="lead">Everything you need to guide enquiries into happy, organised clients.</p>
+      <form id="login-form">
+        <label>Email address<input id="email" type="email" autocomplete="username" required></label>
+        <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+        <p id="auth-error" class="error" role="alert"></p>
+        <button class="button primary wide" type="submit">Open my studio</button>
+      </form>
+      <p class="secure-note">Securely hosted by Ivory Digital. Your business data is kept separate and private.</p>
+    </article>
+    <footer>Thoughtfully built for wedding photographers and videographers.</footer>
+  </section>
+
+  <div id="studio-view" class="shell hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="side-brand"><span class="brand-mark small">ID</span><div><strong>Ivory Digital</strong><small>Booking Studio</small></div></div>
+      <nav>
+        <span>WORKSPACE</span>
+        <button class="active" data-section="home"><i>⌂</i>Home</button>
+        <button disabled><i>♡</i>Enquiries <em>Soon</em></button>
+        <button disabled><i>◇</i>Weddings <em>Soon</em></button>
+        <button disabled><i>□</i>Calendar <em>Soon</em></button>
+        <span>SETUP</span>
+        <button data-section="brand"><i>✦</i>Business & brand</button>
+      </nav>
+      <div class="profile"><span id="initials">--</span><div><strong id="profile-name">Studio owner</strong><small id="profile-role">Owner</small></div><button id="logout" title="Sign out">↗</button></div>
+    </aside>
+    <button id="scrim" class="scrim hidden" aria-label="Close navigation"></button>
+    <main>
+      <header class="topbar"><button id="menu" class="menu" aria-label="Open navigation">☰</button><div class="business-chip"><span></span><strong id="top-business">Your studio</strong></div><div class="trial-chip" id="trial-chip">30-day trial</div></header>
+      <div class="content">
+        <div id="home-section">
+          <header class="welcome"><div><span class="eyebrow">YOUR STUDIO</span><h1 id="greeting">Good morning</h1><p>Let’s get your booking experience ready for your first couple.</p></div><span id="today"></span></header>
+          <section class="hero">
+            <div><span class="hero-kicker">GETTING STARTED</span><h2>Your business, beautifully organised.</h2><p>Work through these short steps once. We’ll keep the setup simple and show you exactly what is ready.</p><div class="progress-row"><div class="progress-track"><span id="progress-bar"></span></div><strong id="progress-label">0% ready</strong></div></div>
+            <div class="hero-art" aria-hidden="true"><span>✓</span><i></i><b></b></div>
+          </section>
+          <section class="dashboard-grid">
+            <article class="panel setup-panel"><header><div><span class="eyebrow">SETUP CHECKLIST</span><h2>Build your client journey</h2></div><small>Your progress saves automatically</small></header><div id="checklist"></div></article>
+            <aside class="right-column">
+              <article class="panel trial-panel"><span class="eyebrow">YOUR TRIAL</span><strong id="trial-days">30</strong><h3>days remaining</h3><p>Explore the studio at your own pace. We’ll let you know before your trial ends.</p></article>
+              <article class="panel calm-panel"><span>●</span><div><strong>Nothing sends without you</strong><p>Automatic messages stay safely paused while you build your workflow.</p></div></article>
+            </aside>
+          </section>
+        </div>
+
+        <div id="brand-section" class="hidden">
+          <header class="section-head"><button id="back-home" class="text-button">← Back to home</button><span class="eyebrow">BUSINESS & BRAND</span><h1>Make it feel like you</h1><p>This is what couples will see when they visit their private client area.</p></header>
+          <section class="brand-grid">
+            <form id="brand-form" class="panel form-panel">
+              <label>Business name<input id="business-name" required minlength="2" maxlength="160"></label>
+              <label>Brand colour<span class="colour-field"><input id="accent" type="color" value="#a9782e"><input id="accent-text" value="#a9782e" pattern="#[0-9A-Fa-f]{6}" maxlength="7"></span></label>
+              <label>Welcome message<textarea id="welcome-message" rows="4" maxlength="500"></textarea></label>
+              <p id="brand-error" class="error" role="alert"></p>
+              <button class="button primary" type="submit">Save business details</button>
+            </form>
+            <article class="portal-preview"><span>COUPLE PREVIEW</span><div><small>PRIVATE CLIENT AREA</small><h2 id="preview-name">Your business</h2><p id="preview-message">Welcome to your private booking area.</p><button type="button">View your booking</button></div><footer>Securely powered by Ivory Digital</footer></article>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js?v=phase-one" defer></script>
+</body>
+</html>

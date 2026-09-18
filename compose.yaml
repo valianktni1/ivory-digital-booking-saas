@@ -1,0 +1,163 @@
+name: tenantsbookingsystem2026
+
+services:
+  init-permissions:
+    image: alpine:3.20
+    container_name: tenantsbookingsystem2026-init
+    user: "0:0"
+    command: >-
+      sh -c "mkdir -p /postgres /redis /platform /tenants &&
+      chown -R 70:70 /postgres &&
+      chown -R 10001:10001 /redis /platform /tenants"
+    volumes:
+      - /mnt/tenant-weddingbookingsystem2026/postgres:/postgres
+      - /mnt/tenant-weddingbookingsystem2026/redis:/redis
+      - /mnt/tenant-weddingbookingsystem2026/platform-storage:/platform
+      - /mnt/photographers_data/tenant-data-weddingbookingsystem2026:/tenants
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tenantsbookingsystem2026-db
+    restart: unless-stopped
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ivory_booking}
+      POSTGRES_USER: ${POSTGRES_USER:-ivory_booking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - /mnt/tenant-weddingbookingsystem2026/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ivory_booking} -d ${POSTGRES_DB:-ivory_booking}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [ivory-booking]
+
+  redis:
+    image: redis:7-alpine
+    container_name: tenantsbookingsystem2026-redis
+    restart: unless-stopped
+    user: "10001:10001"
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - /mnt/tenant-weddingbookingsystem2026/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+    networks: [ivory-booking]
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tenantsbookingsystem2026-backend
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /mnt/tenant-weddingbookingsystem2026/platform-storage:/app/platform-storage
+      - /mnt/photographers_data/tenant-data-weddingbookingsystem2026:/app/tenant-data
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+    networks: [ivory-booking]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tenantsbookingsystem2026-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - /mnt/tenant-weddingbookingsystem2026/platform-storage:/app/platform-storage
+      - /mnt/photographers_data/tenant-data-weddingbookingsystem2026:/app/tenant-data
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from redis import Redis; from app.config import get_settings; assert Redis.from_url(get_settings().redis_url).get('ivory-booking:worker-heartbeat')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks: [ivory-booking]
+
+  manager:
+    build:
+      context: manager
+    container_name: tenantsbookingsystem2026-manager
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "30061:8080"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks: [ivory-booking]
+
+  studio:
+    build:
+      context: studio
+    container_name: tenantsbookingsystem2026-studio
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "30060:8080"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks: [ivory-booking]
+
+  client:
+    build:
+      context: client
+    container_name: tenantsbookingsystem2026-client
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "30062:8080"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks: [ivory-booking]
+
+networks:
+  ivory-booking:
+    name: tenantsbookingsystem2026-network

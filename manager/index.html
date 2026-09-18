@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#17211f">
+  <title>Ivory Digital Manager</title>
+  <link rel="stylesheet" href="/styles.css?v=phase-one">
+</head>
+<body>
+  <section id="login-view" class="auth-shell">
+    <div class="auth-brand">
+      <div class="brand-mark">ID</div>
+      <div><strong>Ivory Digital</strong><span>Private platform management</span></div>
+    </div>
+    <article class="auth-card">
+      <div class="eyebrow">SECURE MANAGER</div>
+      <h1>Welcome back, Mark</h1>
+      <p class="lead">Manage photographers, trials and platform health from one private workspace.</p>
+      <form id="login-form">
+        <label>Email address<input id="login-email" type="email" autocomplete="username" required></label>
+        <label>Password<input id="login-password" type="password" autocomplete="current-password" required></label>
+        <label id="code-field" class="hidden">Authenticator code<input id="login-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6-digit code"></label>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button class="button primary wide" type="submit">Sign in securely</button>
+      </form>
+      <div class="auth-note"><span>●</span> Protected by password, two-factor authentication and private audit history.</div>
+    </article>
+    <footer>Ivory Digital Booking System · Private administration</footer>
+  </section>
+
+  <div id="app-view" class="app-shell hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand"><div class="brand-mark small">ID</div><div><strong>Ivory Digital</strong><span>Manager</span></div></div>
+      <nav>
+        <small>PLATFORM</small>
+        <button data-view="overview" class="active"><i>⌂</i><span>Overview</span></button>
+        <button data-view="businesses"><i>◇</i><span>Photographer businesses</span></button>
+        <button data-view="activity"><i>✓</i><span>Security & activity</span></button>
+      </nav>
+      <div class="manager-profile"><span>MP</span><div><strong>Mark Powell</strong><small>Platform owner</small></div><button id="logout" title="Sign out">↗</button></div>
+    </aside>
+    <button id="scrim" class="scrim hidden" aria-label="Close menu"></button>
+    <main>
+      <header class="topbar">
+        <button id="menu" class="icon-button" aria-label="Open menu">☰</button>
+        <div class="secure-label"><span></span> Private Manager</div>
+        <div class="top-actions"><time id="today"></time><button id="add-business" class="button primary">＋ Add photographer</button></div>
+      </header>
+      <div class="content-wrap">
+        <header class="page-heading"><div><small id="page-kicker">IVORY DIGITAL</small><h1 id="page-title">Good morning, Mark</h1><p id="page-subtitle">A clear view of every business using your platform.</p></div></header>
+        <div id="content" aria-live="polite"><div class="loading-card">Preparing your private workspace…</div></div>
+      </div>
+    </main>
+  </div>
+
+  <div id="modal-overlay" class="modal-overlay hidden"></div>
+  <section id="modal" class="modal hidden" role="dialog" aria-modal="true"><div id="modal-content"></div></section>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js?v=phase-one" defer></script>
+</body>
+</html>
+
