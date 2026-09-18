@@ -12,7 +12,7 @@ The platform never connects to or reuses the Weddings By Mark production databas
 
 ## Current release
 
-Phase Four Journey RC1 provides the first complete proofing journey:
+Phase Five Guided Help includes the complete booking journey plus an interactive support layer:
 
 - Tenant-isolated enquiry forms and custom questions.
 - Enquiry conversion into a wedding journey.
@@ -29,6 +29,10 @@ Phase Four Journey RC1 provides the first complete proofing journey:
 - Google Calendar OAuth foundation, deterministic one-way events and date blocking.
 - One-click wedding completion and clear cancellation controls.
 - Responsive Manager, Studio and Client interfaces.
+- A page-aware Studio help drawer that answers normal-language questions without sending client data to an outside AI service.
+- Suggested questions tailored to the screen currently being viewed.
+- Interactive guided tours that highlight the real controls step by step on desktop and mobile.
+- A central Manager help library where Ivory Digital can edit, publish or hide answers for every studio.
 
 ## Safety defaults
 
@@ -59,4 +63,4 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-For the release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FOUR-JOURNEY-RC1.md`.
+For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-GUIDED-HELP.md`.

@@ -74,6 +74,36 @@ def test_manager_mfa_and_cross_tenant_isolation():
         alpha_client = accept(alpha, "Alex Alpha")
         beta_client = accept(beta, "Ben Beta")
 
+        help_library = manager.get("/api/manager/help/articles")
+        assert help_library.status_code == 200
+        assert len(help_library.json()) >= 15
+        help_home = alpha_client.get("/api/studio/help/articles?context=workflow")
+        assert help_home.status_code == 200
+        assert help_home.json()["suggestions"]
+        assert "outside AI" in help_home.json()["privacy"]
+        no_csrf_help = alpha_client.post("/api/studio/help/ask", json={
+            "question": "How do I pause one follow-up?", "context": "weddings",
+        })
+        assert no_csrf_help.status_code == 403
+        help_answer = alpha_client.post("/api/studio/help/ask", headers=csrf(alpha_client), json={
+            "question": "How do I pause only the first follow-up for one couple?",
+            "context": "weddings",
+        })
+        assert help_answer.status_code == 200, help_answer.text
+        assert help_answer.json()["matched"] is True
+        assert help_answer.json()["article"]["action_route"] == "weddings"
+        draft_help = manager.post("/api/manager/help/articles", headers=csrf(manager), json={
+            "slug": "test-private-answer", "title": "A private draft answer",
+            "category": "Testing", "summary": "Manager-only until published.",
+            "body": "This answer is deliberately long enough to pass validation.",
+            "keywords": ["private draft"], "contexts": ["home"],
+            "is_published": False, "sort_order": 9000,
+        })
+        assert draft_help.status_code == 201, draft_help.text
+        public_help_ids = {row["id"] for row in alpha_client.get(
+            "/api/studio/help/articles?context=home").json()["articles"]}
+        assert draft_help.json()["id"] not in public_help_ids
+
         created = alpha_client.post("/api/studio/clients", headers=csrf(alpha_client), json={
             "first_name": "Chris", "last_name": "Client", "partner_name": "Sam",
             "email": "couple@example.com", "phone": "07000000000"

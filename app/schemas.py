@@ -322,3 +322,28 @@ class BookingCancelIn(BaseModel):
 class CalendarSettingsIn(BaseModel):
     calendar_id: str = Field(default="primary", min_length=1, max_length=500)
     calendar_name: str = Field(default="Primary calendar", min_length=1, max_length=200)
+
+
+class HelpAskIn(BaseModel):
+    question: str = Field(min_length=2, max_length=500)
+    context: str = Field(default="home", max_length=80, pattern=r"^[a-z0-9_-]+$")
+
+
+class HelpArticleIn(BaseModel):
+    slug: str = Field(min_length=3, max_length=100, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    title: str = Field(min_length=3, max_length=180)
+    category: str = Field(default="Getting started", min_length=2, max_length=80)
+    summary: str = Field(default="", max_length=400)
+    body: str = Field(min_length=10, max_length=20_000)
+    keywords: list[str] = Field(default_factory=list, max_length=40)
+    contexts: list[str] = Field(default_factory=list, max_length=20)
+    action_label: str = Field(default="", max_length=100)
+    action_route: str = Field(default="", max_length=80, pattern=r"^[a-z0-9_-]*$")
+    tour_key: str = Field(default="", max_length=80, pattern=r"^[a-z0-9_-]*$")
+    is_published: bool = True
+    sort_order: int = Field(default=0, ge=0, le=10000)
+
+    @field_validator("keywords", "contexts")
+    @classmethod
+    def clean_help_lists(cls, values: list[str]) -> list[str]:
+        return [str(value).strip().lower()[:100] for value in values if str(value).strip()]

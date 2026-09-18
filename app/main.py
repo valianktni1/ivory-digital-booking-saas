@@ -32,7 +32,7 @@ from .database import Base, SessionLocal, engine, get_db
 from .models import (AuditLog, Booking, BookingContract, BookingInvoice,
                      BookingJourney, BookingPayment, Client, Enquiry, EnquiryAnswer,
                      EnquiryFormConfig, EnquiryFormQuestion, Invitation,
-                     MailboxSetting, Membership,
+                     HelpArticle, MailboxSetting, Membership,
                      MembershipRole, PackageAddOn, QuestionnaireSubmission,
                      QuestionnaireTemplate, ServicePackage, Tenant,
                      TenantCalendarConnection, TenantCalendarOAuthState,
@@ -44,6 +44,7 @@ from .schemas import (AutomationPauseIn, BookingCreateIn, BrandingPatchIn,
                       BookingCancelIn, BookingCompleteIn, CalendarSettingsIn, ClientCreateIn,
                       ContractIssueIn, ContractSignIn, ContractTemplateIn,
                       DateBlockIn, EnquiryConvertIn, EnquiryFormIn, EnquiryQuestionIn,
+                      HelpArticleIn, HelpAskIn,
                       InvitationAcceptIn, LoginIn, AddOnIn, MailboxSettingsIn,
                       PackageIn, PaymentRecordIn, PublicEnquiryIn,
                       QuestionnaireSubmitIn, QuestionnaireTemplateIn,
@@ -88,6 +89,162 @@ def audit(db: Session, action: str, subject_type: str, subject_id: str | None,
     ))
 
 
+DEFAULT_HELP_ARTICLES = (
+    {
+        "slug": "start-setting-up-my-studio", "title": "Where should I start?",
+        "category": "Getting started", "contexts": ["home"], "tour_key": "home",
+        "keywords": ["start", "setup", "first", "begin", "checklist", "new studio"],
+        "summary": "Work through the setup checklist in a calm, safe order.",
+        "body": "Start with Business & brand, then publish your enquiry form and add your packages. Next, create your agreement and forms, connect your mailbox, and review the supplied workflow.\n\nEverything begins safely paused. Building your Studio cannot accidentally contact a couple.",
+        "action_label": "Return to setup checklist", "action_route": "home", "sort_order": 10,
+    },
+    {
+        "slug": "publish-enquiry-form", "title": "How do I publish my enquiry form?",
+        "category": "Enquiries", "contexts": ["enquiry", "enquiries"], "tour_key": "enquiry",
+        "keywords": ["publish", "enquiry form", "inquiry form", "questions", "website link", "form live"],
+        "summary": "Prepare the questions, preview the page, then deliberately publish it.",
+        "body": "Open Enquiry form from Setup. Write your heading and welcome, review the protected contact and wedding questions, and add any questions of your own. Use Preview form to check the couple's view.\n\nWhen you are happy, switch on Publish this enquiry form and save. The public address can then be linked from your website.",
+        "action_label": "Open enquiry form", "action_route": "enquiry", "sort_order": 20,
+    },
+    {
+        "slug": "turn-enquiry-into-wedding", "title": "How do I start a booking from an enquiry?",
+        "category": "Enquiries", "contexts": ["enquiries", "weddings"], "tour_key": "enquiries",
+        "keywords": ["convert", "enquiry", "inquiry", "start journey", "make booking", "new wedding"],
+        "summary": "Convert the enquiry once you are ready to prepare their quote.",
+        "body": "Open Enquiries and find the couple. Review their date, venue, message and answers, then select Start client journey.\n\nTheir details are carried into Weddings automatically, so you do not need to type them again. This does not secure the date or send an email by itself.",
+        "action_label": "View enquiries", "action_route": "enquiries", "sort_order": 30,
+    },
+    {
+        "slug": "create-and-send-quote", "title": "How do I prepare a quote?",
+        "category": "Quotes", "contexts": ["weddings"], "tour_key": "weddings",
+        "keywords": ["quote", "quotation", "send quote", "package choice", "client link", "prepare quote"],
+        "summary": "Choose what to offer, save it, then copy the secure couple link.",
+        "body": "Open Weddings and select the couple. Tick the packages and optional extras you want to offer, add your personal message, and save the draft.\n\nSelect Prepare quote link when it is ready. The private couple link is copied for you to send personally. No package is pre-selected for the couple and preparing the link does not email them automatically.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 40,
+    },
+    {
+        "slug": "change-accepted-quote", "title": "Can I change a quote after it is accepted?",
+        "category": "Quotes", "contexts": ["weddings", "payments"],
+        "keywords": ["edit accepted quote", "change quote", "add free album", "amend quote", "fully paid", "locked"],
+        "summary": "Yes, until the invoice is fully paid, with a permanent audit trail.",
+        "body": "Open the wedding and use Add something before full payment beneath the accepted quote. Enter the description, price — including £0 for a complimentary item — and the reason for the change.\n\nThe original accepted snapshot is preserved and the invoice is updated. Once paid in full, commercial changes are locked for safety.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 50,
+    },
+    {
+        "slug": "record-payment", "title": "How do I record a payment?",
+        "category": "Payments", "contexts": ["payments", "weddings"], "tour_key": "payments",
+        "keywords": ["payment", "deposit", "booking fee", "bank transfer", "cash", "paid", "balance"],
+        "summary": "Record money only after you have actually received it.",
+        "body": "Open Payments, or open the couple's wedding and find their invoice. Select Record payment received, enter the amount and date, choose the payment method, and add a reference if helpful.\n\nThe invoice balance updates immediately. The system never marks money as received on its own.",
+        "action_label": "Open payments", "action_route": "payments", "sort_order": 60,
+    },
+    {
+        "slug": "secure-date-without-booking-fee", "title": "What if they are paying later or on the day?",
+        "category": "Payments", "contexts": ["weddings", "calendar"],
+        "keywords": ["pay later", "pay on day", "no deposit", "no booking fee", "secure date", "special arrangement"],
+        "summary": "Record a special payment arrangement to secure the date deliberately.",
+        "body": "Open the wedding and select Record an agreed pay-later arrangement in the Calendar panel. Add a private note explaining what you agreed.\n\nThis deliberately secures the date and allows it to appear in availability and the connected calendar without pretending that a payment was received.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 70,
+    },
+    {
+        "slug": "issue-and-sign-contract", "title": "How do contracts work?",
+        "category": "Contracts & forms", "contexts": ["documents", "weddings"], "tour_key": "documents",
+        "keywords": ["contract", "agreement", "sign", "signature", "countersign", "terms"],
+        "summary": "The couple signs first, then the photographer countersigns.",
+        "body": "Create and save your active agreement under Contracts & forms. Inside a wedding, choose Issue active agreement. The couple reads and signs the fixed snapshot in their secure portal.\n\nWhen their signature arrives, Studio shows that yours is required. Countersign it there, then either side can download the completed PDF.",
+        "action_label": "Open contracts & forms", "action_route": "documents", "sort_order": 80,
+    },
+    {
+        "slug": "questionnaires-and-final-timings", "title": "How do booking and final-timings forms work?",
+        "category": "Contracts & forms", "contexts": ["documents", "weddings"],
+        "keywords": ["questionnaire", "booking form", "final timings", "questions", "completed form", "download pdf"],
+        "summary": "Create the questions once and collect answers in the secure couple portal.",
+        "body": "Open Contracts & forms and enter one question per line. Add an asterisk to make an answer required. Save the booking form and final-timings form separately.\n\nThe couple completes them inside their portal. Submitted answers appear in their wedding journey and can be downloaded as clearly named PDFs.",
+        "action_label": "Open contracts & forms", "action_route": "documents", "sort_order": 90,
+    },
+    {
+        "slug": "workflow-modes-explained", "title": "What do the four workflow modes mean?",
+        "category": "Emails & workflow", "contexts": ["workflow", "weddings"], "tour_key": "workflow",
+        "keywords": ["automatic", "review first", "task only", "disabled", "workflow mode", "email timing"],
+        "summary": "Choose how much control you want for every individual step.",
+        "body": "Disabled does nothing. Task only creates a private reminder and never contacts the couple. Review first prepares the action but waits for your approval. Automatic can send at the chosen time — but only after Ivory Digital's master safety pause has been released.\n\nYou can use a different mode for every step.",
+        "action_label": "Open emails & workflow", "action_route": "workflow", "sort_order": 100,
+    },
+    {
+        "slug": "pause-one-follow-up", "title": "How do I pause one follow-up for one couple?",
+        "category": "Emails & workflow", "contexts": ["weddings", "workflow"],
+        "keywords": ["pause follow up", "stop first email", "one couple", "individual step", "resume reminder"],
+        "summary": "Pause only the unwanted step without disturbing later reminders.",
+        "body": "Open the couple's wedding and find Workflow in the side panel. Expand Pause individual steps and pause only the message you do not want.\n\nOther steps remain unchanged. Return to the same control to resume that step for the couple later.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 110,
+    },
+    {
+        "slug": "connect-business-email", "title": "How do I connect my email account?",
+        "category": "Email connection", "contexts": ["mailbox", "workflow"], "tour_key": "mailbox",
+        "keywords": ["smtp", "imap", "email setup", "mailbox", "connect email", "password", "send receive"],
+        "summary": "Add the provider's SMTP and IMAP details, then test each direction.",
+        "body": "Open Email connection and enter the sender name, email address, SMTP details for outgoing mail and IMAP details for incoming mail. Save the connection, then test outgoing and incoming separately.\n\nConnecting or testing a mailbox never releases automatic workflows. Some providers require an app password rather than the normal mailbox password.",
+        "action_label": "Open email connection", "action_route": "mailbox", "sort_order": 120,
+    },
+    {
+        "slug": "connect-google-calendar", "title": "How do I connect Google Calendar?",
+        "category": "Calendar", "contexts": ["calendar", "home"], "tour_key": "calendar",
+        "keywords": ["google calendar", "connect calendar", "sync", "calendar account", "events"],
+        "summary": "Connect your own Google account and keep client invitations switched off.",
+        "body": "Open Calendar and choose Connect Google Calendar. Sign into the Google account you want to use, approve the requested calendar access, then return to Studio.\n\nSecured weddings and blocked dates sync as private one-way events. Couples are never added as guests, so Google does not email them.",
+        "action_label": "Open calendar", "action_route": "calendar", "sort_order": 130,
+    },
+    {
+        "slug": "block-holiday-dates", "title": "How do I block holidays or unavailable dates?",
+        "category": "Calendar", "contexts": ["calendar"],
+        "keywords": ["block date", "holiday", "unavailable", "time away", "multiple days", "website checker"],
+        "summary": "Block one day or a date range from the Calendar screen.",
+        "body": "Open Calendar, enter the first and last unavailable dates, give the block a clear label, and save it. Use the same date twice for a single day.\n\nThe block is included in public availability immediately and is added to Google Calendar when a connection is available.",
+        "action_label": "Block dates", "action_route": "calendar", "sort_order": 140,
+    },
+    {
+        "slug": "complete-wedding", "title": "How do I complete a wedding?",
+        "category": "Weddings", "contexts": ["weddings"],
+        "keywords": ["complete wedding", "archive wedding", "finished", "mark complete", "checklist"],
+        "summary": "Use the single Wedding complete button when your work is finished.",
+        "body": "Open the wedding and select Wedding complete. The booking is marked complete and future workflow actions are stopped.\n\nThere is no blocking checklist: the decision remains yours. Existing invoices, contracts, forms and history stay attached for your records.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 150,
+    },
+    {
+        "slug": "packages-and-extras", "title": "How do packages and add-ons work?",
+        "category": "Packages & pricing", "contexts": ["packages", "weddings"], "tour_key": "packages",
+        "keywords": ["package", "add on", "extra", "mandatory", "booking fee", "balance due", "pricing"],
+        "summary": "Create reusable packages and keep ordinary extras optional.",
+        "body": "Open Packages & pricing to add your services, booking fee, balance timing and included items. Add albums, extra hours and other options under Add-ons.\n\nOrdinary extras remain optional and unselected. Use Mandatory only when a charge genuinely cannot be removed, such as agreed travel, and explain why.",
+        "action_label": "Open packages & pricing", "action_route": "packages", "sort_order": 160,
+    },
+    {
+        "slug": "nothing-sends-without-you", "title": "Could anything send before I am ready?",
+        "category": "Safety", "contexts": ["home", "workflow", "mailbox"],
+        "keywords": ["send automatically", "safety pause", "nothing sends", "accidental email", "go live"],
+        "summary": "No. New studios and starter workflow steps begin safely paused.",
+        "body": "Every new studio starts with Ivory Digital's master automation pause switched on, and every supplied workflow step starts Disabled. Connecting email or editing a template does not change either safety control.\n\nAutomatic delivery is possible only when a step is set to Automatic and the platform master pause has been deliberately released.",
+        "action_label": "Review workflow", "action_route": "workflow", "sort_order": 170,
+    },
+    {
+        "slug": "contact-ivory-digital", "title": "I still need help",
+        "category": "Ivory Digital support", "contexts": ["home"],
+        "keywords": ["support", "contact", "human", "help me", "problem", "not working", "stuck"],
+        "summary": "Contact Ivory Digital when you need a human pair of eyes.",
+        "body": "If the answer here does not solve it, contact Ivory Digital and explain what you were trying to do, which screen you were on, and what happened. A screenshot is helpful, but never include a password or recovery code.\n\nEmail sales@ivorydigital.uk and your question can also help improve this guide for every studio.",
+        "action_label": "Email Ivory Digital", "action_route": "", "sort_order": 999,
+    },
+)
+
+
+def ensure_help_catalog(db: Session) -> None:
+    if (db.scalar(select(func.count(HelpArticle.id))) or 0) > 0:
+        return
+    for item in DEFAULT_HELP_ARTICLES:
+        db.add(HelpArticle(is_published=True, **item))
+    db.commit()
+
+
 def bootstrap_platform_admin(db: Session) -> None:
     email = normalise_email(str(settings.platform_admin_email))
     admin = db.scalar(select(User).where(User.email == email))
@@ -113,6 +270,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         bootstrap_platform_admin(db)
+        ensure_help_catalog(db)
         install_postgres_rls(db)
         db.commit()
     yield
@@ -120,7 +278,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.4.0-phase-four-journey-rc1",
+    version="0.5.0-phase-five-guided-help",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -188,7 +346,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.18-phase-four-journey-rc1", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.18-phase-five-guided-help", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -502,6 +660,61 @@ def manager_audit(_: User = Depends(platform_admin), db: Session = Depends(get_d
              "detail": row.detail, "created_at": row.created_at.isoformat()} for row in rows]
 
 
+def help_article_json(row: HelpArticle, include_body: bool = True) -> dict:
+    result = {
+        "id": row.id, "slug": row.slug, "title": row.title,
+        "category": row.category, "summary": row.summary,
+        "keywords": row.keywords or [], "contexts": row.contexts or [],
+        "action_label": row.action_label, "action_route": row.action_route,
+        "tour_key": row.tour_key, "is_published": row.is_published,
+        "sort_order": row.sort_order, "updated_at": row.updated_at.isoformat(),
+    }
+    if include_body:
+        result["body"] = row.body
+    return result
+
+
+@app.get("/api/manager/help/articles")
+def manager_help_articles(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    rows = db.scalars(select(HelpArticle).order_by(
+        HelpArticle.sort_order, HelpArticle.category, HelpArticle.title)).all()
+    return [help_article_json(row) for row in rows]
+
+
+@app.post("/api/manager/help/articles", status_code=201)
+def create_help_article(payload: HelpArticleIn, request: Request,
+                        admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    if db.scalar(select(HelpArticle.id).where(HelpArticle.slug == payload.slug)):
+        raise HTTPException(409, "That help article address is already in use")
+    row = HelpArticle(**payload.model_dump())
+    db.add(row); db.flush()
+    audit(db, "help_article_created", "help_article", row.id, actor=admin,
+          request=request, detail={"slug": row.slug, "title": row.title})
+    result = help_article_json(row)
+    db.commit()
+    return result
+
+
+@app.put("/api/manager/help/articles/{article_id}")
+def update_help_article(article_id: str, payload: HelpArticleIn, request: Request,
+                        admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    row = db.get(HelpArticle, article_id)
+    if not row:
+        raise HTTPException(404, "Help article not found")
+    duplicate = db.scalar(select(HelpArticle.id).where(
+        HelpArticle.slug == payload.slug, HelpArticle.id != row.id))
+    if duplicate:
+        raise HTTPException(409, "That help article address is already in use")
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    audit(db, "help_article_updated", "help_article", row.id, actor=admin,
+          request=request, detail={"slug": row.slug, "title": row.title,
+                                   "published": row.is_published})
+    result = help_article_json(row)
+    db.commit()
+    return result
+
+
 def valid_invitation(db: Session, raw_token: str) -> Invitation:
     row = db.scalar(select(Invitation).options(selectinload(Invitation.tenant)).where(
         Invitation.token_hash == token_hash(raw_token)))
@@ -563,6 +776,90 @@ def studio_write_context(session: UserSession, db: Session) -> tuple[Membership,
     if membership.role not in {MembershipRole.OWNER, MembershipRole.ADMIN}:
         raise HTTPException(403, "Owner or administrator access is required")
     return membership, db.get(Tenant, membership.tenant_id)
+
+
+HELP_STOP_WORDS = {
+    "a", "about", "an", "and", "are", "can", "do", "for", "from", "how",
+    "i", "in", "is", "it", "me", "my", "of", "on", "or", "the", "this",
+    "to", "what", "when", "where", "with",
+}
+
+
+def help_words(value: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z0-9]+", value.lower())
+            if len(word) > 1 and word not in HELP_STOP_WORDS}
+
+
+def help_match_score(article: HelpArticle, question: str, context: str) -> int:
+    normal = " ".join(re.findall(r"[a-z0-9]+", question.lower()))
+    tokens = help_words(question)
+    title_words = help_words(article.title)
+    keyword_text = " ".join(str(value).lower() for value in (article.keywords or []))
+    keyword_words = help_words(keyword_text)
+    content_words = help_words(f"{article.summary} {article.body}")
+    score = len(tokens & title_words) * 5
+    score += len(tokens & keyword_words) * 4
+    score += min(len(tokens & content_words), 5)
+    for keyword in article.keywords or []:
+        phrase = " ".join(re.findall(r"[a-z0-9]+", str(keyword).lower()))
+        if phrase and phrase in normal:
+            score += 8
+    if context in (article.contexts or []):
+        score += 3
+    if article.action_route == context:
+        score += 1
+    return score
+
+
+def help_suggestions(rows: list[HelpArticle], context: str,
+                     exclude_id: str | None = None, limit: int = 4) -> list[dict]:
+    ordered = sorted(rows, key=lambda row: (
+        0 if context in (row.contexts or []) else 1,
+        row.sort_order, row.title.lower()))
+    return [help_article_json(row, include_body=False) for row in ordered
+            if row.id != exclude_id][:limit]
+
+
+@app.get("/api/studio/help/articles")
+def studio_help_articles(context: str = "home", _=Depends(studio_context),
+                         db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(HelpArticle).where(
+        HelpArticle.is_published.is_(True)).order_by(
+        HelpArticle.sort_order, HelpArticle.title)).all())
+    return {
+        "context": context,
+        "articles": [help_article_json(row, include_body=False) for row in rows],
+        "suggestions": help_suggestions(rows, context),
+        "privacy": "Questions are answered inside Ivory Digital and are not sent to an outside AI service.",
+    }
+
+
+@app.post("/api/studio/help/ask")
+def ask_studio_help(payload: HelpAskIn, _session: UserSession = Depends(require_csrf),
+                    db: Session = Depends(get_db)):
+    # Resolve membership first so a signed-in user can never use this as a public endpoint.
+    membership_for(db, _session.user)
+    rows = list(db.scalars(select(HelpArticle).where(
+        HelpArticle.is_published.is_(True)).order_by(HelpArticle.sort_order)).all())
+    ranked = sorted(((help_match_score(row, payload.question, payload.context), row)
+                     for row in rows), key=lambda item: (-item[0], item[1].sort_order))
+    score, match = ranked[0] if ranked else (0, None)
+    if not match or score < 4:
+        return {
+            "matched": False,
+            "answer": "I could not find a confident answer to that yet. Try one of the suggested questions below, or contact Ivory Digital and we will help personally.",
+            "suggestions": help_suggestions(rows, payload.context),
+            "support_email": "sales@ivorydigital.uk",
+        }
+    article = help_article_json(match)
+    return {
+        "matched": True,
+        "confidence": "high" if score >= 16 else "good" if score >= 9 else "possible",
+        "answer": match.body,
+        "article": article,
+        "suggestions": help_suggestions(rows, payload.context, match.id, 3),
+        "support_email": "sales@ivorydigital.uk",
+    }
 
 
 def package_json(row: ServicePackage) -> dict:

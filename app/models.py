@@ -521,3 +521,22 @@ class WorkflowAction(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class HelpArticle(Base):
+    __tablename__ = "help_articles"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    category: Mapped[str] = mapped_column(String(80), default="Getting started", index=True)
+    summary: Mapped[str] = mapped_column(String(400), default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    keywords: Mapped[list] = mapped_column(JSON, default=list)
+    contexts: Mapped[list] = mapped_column(JSON, default=list)
+    action_label: Mapped[str] = mapped_column(String(100), default="")
+    action_route: Mapped[str] = mapped_column(String(80), default="")
+    tour_key: Mapped[str] = mapped_column(String(80), default="")
+    is_published: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
