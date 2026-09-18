@@ -1,9 +1,10 @@
 from urllib.parse import parse_qs, urlparse
 
 import pyotp
+import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, ensure_public_mail_host
 
 
 def csrf(client: TestClient) -> dict:
@@ -143,6 +144,40 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert dashboard["onboarding"]["packages"] is True
         assert dashboard["onboarding"]["templates"] is True
 
+        enquiry_form = alpha_client.put("/api/studio/enquiry-form", headers=csrf(alpha_client), json={
+            "heading": "Tell us about your wedding", "introduction": "We would love to hear your plans.",
+            "submit_label": "Send my enquiry", "success_message": "Thank you - it arrived safely.",
+            "ask_partner_name": True, "ask_phone": True, "ask_venue": True,
+            "ask_package_interest": True, "ask_message": True, "is_published": True,
+        })
+        assert enquiry_form.status_code == 200, enquiry_form.text
+        public_form = manager.get("/api/public/business/alpha-weddings/enquiry-form")
+        assert public_form.status_code == 200
+        assert public_form.json()["packages"][0]["name"] == "Story Collection"
+        submitted = manager.post("/api/public/business/alpha-weddings/enquiries", json={
+            "first_name": "Taylor", "partner_name": "Jordan", "email": "taylor@example.com",
+            "phone": "07000111222", "event_date": "2027-08-14", "venue": "Test Hall",
+            "package_interest": "Story Collection", "message": "We love relaxed photographs.",
+            "website": "",
+        })
+        assert submitted.status_code == 201, submitted.text
+        assert submitted.json()["automatic_reply"] == "paused"
+        assert len(alpha_client.get("/api/studio/enquiries").json()) == 1
+        assert beta_client.get("/api/studio/enquiries").json() == []
+
+        mailbox = alpha_client.put("/api/studio/mailbox", headers=csrf(alpha_client), json={
+            "from_name": "Alpha Weddings", "email_address": "hello@alpha.example",
+            "smtp_host": "smtp.alpha.example", "smtp_port": 465, "smtp_security": "ssl",
+            "smtp_username": "hello@alpha.example", "smtp_password": "smtp-secret-password",
+            "imap_host": "imap.alpha.example", "imap_port": 993, "imap_security": "ssl",
+            "imap_username": "hello@alpha.example", "imap_password": "imap-secret-password",
+        })
+        assert mailbox.status_code == 200, mailbox.text
+        assert mailbox.json()["smtp_has_password"] is True
+        assert "smtp-secret-password" not in mailbox.text
+        assert "imap-secret-password" not in mailbox.text
+        assert beta_client.get("/api/studio/mailbox").json()["configured"] is False
+
         public = manager.get("/api/public/business/alpha-weddings")
         assert public.status_code == 200
         assert set(public.json()) == {
@@ -176,3 +211,10 @@ def test_login_throttle_locks_repeated_bad_attempts():
             "email": "unknown@example.com", "password": "DefinitelyWrong!123"
         })
         assert locked.status_code == 429
+
+
+def test_mail_connection_rejects_private_hosts():
+    with pytest.raises(ValueError):
+        ensure_public_mail_host("localhost", 465, {465, 587})
+    with pytest.raises(ValueError):
+        ensure_public_mail_host("127.0.0.1", 993, {143, 993})

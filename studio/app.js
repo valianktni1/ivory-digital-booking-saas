@@ -2,7 +2,9 @@ const $ = (q) => document.querySelector(q);
 const csrf = () => document.cookie.split('; ').find(v => v.startsWith('ivory_booking_csrf='))?.split('=')[1] || '';
 let dashboard;
 let packages=[], addOns=[], workflows=[];
-const triggers={enquiry_received:'Enquiry received',quote_sent:'Quote sent',quote_accepted:'Quote accepted',booking_fee_paid:'Booking fee paid',contract_signed:'Contract signed',questionnaire_submitted:'Questionnaire submitted',balance_due:'Balance due',balance_paid:'Balance paid',wedding_date:'Wedding date',wedding_completed:'Wedding completed'};
+let enquiryForm, mailbox;
+const triggers={enquiry_received:'New enquiry submitted',quote_sent:'Quote sent',quote_accepted:'Quote accepted',booking_fee_paid:'Booking fee paid',contract_signed:'Contract signed',questionnaire_submitted:'Questionnaire submitted',balance_due:'Balance due',balance_paid:'Balance paid',wedding_date:'Wedding date',wedding_completed:'Wedding completed'};
+$('#step-trigger').closest('label').firstChild.textContent='Trigger - when this happens';$('#step-direction').closest('label').firstChild.textContent='Timing';
 
 async function api(path, options = {}) {
   const headers = {...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})};
@@ -30,31 +32,33 @@ function escapeHtml(value=''){const d=document.createElement('div');d.textConten
 
 function render(){
   const {user,tenant,onboarding}=dashboard;
-  $('#profile-name').textContent=user.full_name;$('#profile-role').textContent=user.role;$('#initials').textContent=initials(user.full_name);
+  $('#profile-name').textContent=user.full_name;$('#profile-role').textContent=user.role;$('#initials').textContent=initials(user.full_name);$('#enquiry-count').textContent=dashboard.enquiry_count||0;
   $('#top-business').textContent=tenant.display_name;$('#greeting').textContent=`${greeting()}, ${user.full_name.split(' ')[0]}`;
   $('#today').textContent=new Intl.DateTimeFormat('en-GB',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   const days=daysLeft(tenant.trial_ends_at);$('#trial-days').textContent=days;$('#trial-chip').textContent=`${days} day${days===1?'':'s'} left in trial`;
   const steps=[
     ['business','Business details','Add your trading name and the essentials couples should see.','✦',true],
     ['branding','Brand and welcome','Choose your colour and write a warm client welcome.','◈',true],
+    ['enquiry_form','Enquiry form','Create the form that begins every client journey.','?',true],
     ['packages','Packages and pricing','Build the services couples can choose from.','£',true],
     ['templates','Emails and workflow','Create your own timings and message style.','✉',true],
+    ['mailbox','Email connection','Connect your professional sending and receiving mailbox.','@',true],
     ['calendar','Connect your calendar','Keep every confirmed date together.','□',false],
     ['ready','Review and go live','We will check everything with you before anything sends.','✓',false]
   ];
   const complete=steps.filter(s=>onboarding[s[0]]).length;const pct=Math.round(complete/steps.length*100);
   $('#progress-bar').style.width=`${pct}%`;$('#progress-label').textContent=`${pct}% ready`;
   $('#checklist').innerHTML=steps.map(([key,title,copy,icon,available])=>`<div class="setup-item ${onboarding[key]?'done':''}"><span class="setup-icon">${onboarding[key]?'✓':icon}</span><div><strong>${title}</strong><small>${onboarding[key]?'Complete':copy}</small></div><button data-step="${key}" ${available?'':'disabled'}>${onboarding[key]?'Review':available?'Set up':'Coming soon'}</button></div>`).join('');
-  document.querySelectorAll('[data-step]').forEach(b=>b.addEventListener('click',()=>showSection(({business:'brand',branding:'brand',packages:'packages',templates:'workflow'})[b.dataset.step]||'home')));
+  document.querySelectorAll('[data-step]').forEach(b=>b.addEventListener('click',()=>showSection(({business:'brand',branding:'brand',enquiry_form:'enquiry',packages:'packages',templates:'workflow',mailbox:'mailbox'})[b.dataset.step]||'home')));
   const brand=tenant.branding||{};$('#business-name').value=brand.display_name||tenant.display_name;$('#accent').value=brand.accent_colour||'#a9782e';$('#accent-text').value=brand.accent_colour||'#a9782e';$('#welcome-message').value=brand.welcome_message||'Welcome to your private booking area.';updatePreview();
 }
 
 function updatePreview(){const colour=$('#accent-text').value;$('#preview-name').textContent=$('#business-name').value||'Your business';$('#preview-message').textContent=$('#welcome-message').value||'Welcome to your private booking area.';if(/^#[0-9a-f]{6}$/i.test(colour))document.documentElement.style.setProperty('--preview',colour);$('.portal-preview button').style.background=colour}
-async function showSection(name){['home','brand','packages','workflow'].forEach(x=>$(`#${x}-section`).classList.toggle('hidden',name!==x));document.querySelectorAll('[data-section]').forEach(b=>b.classList.toggle('active',b.dataset.section===name));closeMenu();scrollTo({top:0,behavior:'smooth'});if(name==='packages')await loadPackages();if(name==='workflow')await loadWorkflow()}
+async function showSection(name){['home','enquiries','brand','enquiry','packages','workflow','mailbox'].forEach(x=>$(`#${x}-section`).classList.toggle('hidden',name!==x));document.querySelectorAll('[data-section]').forEach(b=>b.classList.toggle('active',b.dataset.section===name));closeMenu();scrollTo({top:0,behavior:'smooth'});if(name==='enquiries')await loadEnquiries();if(name==='enquiry')await loadEnquiryForm();if(name==='packages')await loadPackages();if(name==='workflow')await loadWorkflow();if(name==='mailbox')await loadMailbox()}
 function closeMenu(){$('#sidebar').classList.remove('open');$('#scrim').classList.add('hidden')}
 
 async function openStudio(){
-  try{dashboard=await api('/api/studio/dashboard');$('#auth-view').classList.add('hidden');$('#studio-view').classList.remove('hidden');render()}
+  try{dashboard=await api('/api/studio/dashboard');const wanted=`/${dashboard.tenant.slug}`;if(location.pathname!==wanted)history.replaceState({},'',wanted);$('#auth-view').classList.add('hidden');$('#studio-view').classList.remove('hidden');render()}
   catch{$('#auth-view').classList.remove('hidden');$('#studio-view').classList.add('hidden')}
 }
 
@@ -79,5 +83,18 @@ function openStep(s){$('#step-form').reset();$('#step-id').value=s?.id||'';$('#s
 function toggleStepFields(){const email=$('#step-action').value==='email',instant=$('#step-direction').value==='immediately';$('#task-wrap').classList.toggle('hidden',email);$('#subject-wrap').classList.toggle('hidden',!email);$('#message-wrap').classList.toggle('hidden',!email);$('#offset-wrap').classList.toggle('hidden',instant)}
 $('#new-step').onclick=()=>openStep();$('#step-action').onchange=toggleStepFields;$('#step-direction').onchange=toggleStepFields;
 $('#step-form').onsubmit=async e=>{e.preventDefault();const w=workflows[0],id=$('#step-id').value,data={name:$('#step-name').value,trigger_event:$('#step-trigger').value,timing_direction:$('#step-direction').value,offset_value:$('#step-direction').value==='immediately'?0:Number($('#step-offset').value),offset_unit:$('#step-unit').value,action_type:$('#step-action').value,subject:$('#step-subject').value,message_body:$('#step-message').value,task_title:$('#step-task').value,is_paused:$('#step-paused').checked,sort_order:w.steps.length};try{await api(`/api/studio/workflows/${w.id}/steps${id?'/'+id:''}`,{method:id?'PATCH':'POST',body:JSON.stringify(data)});$('#step-dialog').close();await loadWorkflow();dashboard=await api('/api/studio/dashboard');render();toast(id?'Workflow step updated.':'Workflow step added safely — it is paused.')}catch(err){$('#step-error').textContent=err.message}};
+
+async function loadEnquiryForm(){try{enquiryForm=await api('/api/studio/enquiry-form');$('#enquiry-heading').value=enquiryForm.heading;$('#enquiry-introduction').value=enquiryForm.introduction;$('#enquiry-submit-label').value=enquiryForm.submit_label;$('#enquiry-success').value=enquiryForm.success_message;$('#ask-partner').checked=enquiryForm.ask_partner_name;$('#ask-phone').checked=enquiryForm.ask_phone;$('#ask-venue').checked=enquiryForm.ask_venue;$('#ask-package').checked=enquiryForm.ask_package_interest;$('#ask-message').checked=enquiryForm.ask_message;$('#enquiry-published').checked=enquiryForm.is_published;$('#enquiry-preview').href=enquiryForm.public_url}catch(e){toast(e.message,true)}}
+$('#enquiry-form').onsubmit=async e=>{e.preventDefault();const data={heading:$('#enquiry-heading').value,introduction:$('#enquiry-introduction').value,submit_label:$('#enquiry-submit-label').value,success_message:$('#enquiry-success').value,ask_partner_name:$('#ask-partner').checked,ask_phone:$('#ask-phone').checked,ask_venue:$('#ask-venue').checked,ask_package_interest:$('#ask-package').checked,ask_message:$('#ask-message').checked,is_published:$('#enquiry-published').checked};try{enquiryForm=await api('/api/studio/enquiry-form',{method:'PUT',body:JSON.stringify(data)});dashboard=await api('/api/studio/dashboard');render();toast(data.is_published?'Enquiry form saved and published.':'Enquiry form saved as a private draft.')}catch(err){$('#enquiry-error').textContent=err.message}};
+
+function verified(value){return value?'Connected':'Not tested'}
+async function loadMailbox(){try{mailbox=await api('/api/studio/mailbox');$('#mail-from-name').value=mailbox.from_name||dashboard.tenant.display_name;$('#mail-address').value=mailbox.email_address;['smtp','imap'].forEach(type=>{for(const key of ['host','port','security','username'])$(`#${type}-${key}`).value=mailbox[`${type}_${key}`];$(`#${type}-status`).textContent=verified(mailbox[`${type}_verified_at`]);$(`#${type}-status`).classList.toggle('connected',!!mailbox[`${type}_verified_at`]);$(`#${type}-password-note`).textContent=mailbox[`${type}_has_password`]?'Password saved securely. Leave blank to keep it.':'Required when first connecting.'})}catch(e){toast(e.message,true)}}
+function mailboxPayload(){return {from_name:$('#mail-from-name').value,email_address:$('#mail-address').value,smtp_host:$('#smtp-host').value,smtp_port:Number($('#smtp-port').value),smtp_security:$('#smtp-security').value,smtp_username:$('#smtp-username').value,smtp_password:$('#smtp-password').value,imap_host:$('#imap-host').value,imap_port:Number($('#imap-port').value),imap_security:$('#imap-security').value,imap_username:$('#imap-username').value,imap_password:$('#imap-password').value}}
+async function saveMailbox(){mailbox=await api('/api/studio/mailbox',{method:'PUT',body:JSON.stringify(mailboxPayload())});$('#smtp-password').value='';$('#imap-password').value='';dashboard=await api('/api/studio/dashboard');render();return mailbox}
+$('#mailbox-form').onsubmit=async e=>{e.preventDefault();try{await saveMailbox();await loadMailbox();toast('Email connection saved securely. Nothing has been sent.')}catch(err){$('#mailbox-error').textContent=err.message}};
+async function testMail(type){const button=$(`#test-${type}`),status=$(`#${type}-status`);button.disabled=true;status.textContent='Testing…';try{await saveMailbox();await api(`/api/studio/mailbox/test/${type}`,{method:'POST'});await loadMailbox();toast(`${type.toUpperCase()} connection verified.`)}catch(err){status.textContent='Check details';status.classList.remove('connected');$('#mailbox-error').textContent=err.message}finally{button.disabled=false}}
+$('#test-smtp').onclick=()=>testMail('smtp');$('#test-imap').onclick=()=>testMail('imap');
+
+async function loadEnquiries(){try{const rows=await api('/api/studio/enquiries');$('#enquiry-list').innerHTML=rows.length?rows.map(row=>`<article class="panel enquiry-card"><div class="enquiry-avatar">${escapeHtml(initials([row.first_name,row.partner_name].filter(Boolean).join(' & ')))}</div><div class="enquiry-main"><span>${row.event_date?new Intl.DateTimeFormat('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'}).format(new Date(row.event_date+'T12:00:00')):'Date not supplied'}</span><h2>${escapeHtml(row.first_name)}${row.partner_name?' & '+escapeHtml(row.partner_name):''}</h2><p>${escapeHtml(row.venue||'Venue not supplied')} ${row.package_interest?'· '+escapeHtml(row.package_interest):''}</p><small>${escapeHtml(row.email)}${row.phone?' · '+escapeHtml(row.phone):''}</small>${row.message?`<blockquote>${escapeHtml(row.message)}</blockquote>`:''}</div><em>New</em></article>`).join(''):empty('No enquiries yet','Publish your enquiry form when it is ready. New submissions will appear here immediately.')}catch(e){toast(e.message,true)}}
 
 const invite=new URLSearchParams(location.search).get('invite');if(invite)showInvitation(invite);else openStudio();

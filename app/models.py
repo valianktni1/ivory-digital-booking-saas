@@ -243,3 +243,56 @@ class WorkflowRevision(Base):
     snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EnquiryFormConfig(Base):
+    __tablename__ = "enquiry_form_configs"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    heading: Mapped[str] = mapped_column(String(180), default="Tell us about your wedding")
+    introduction: Mapped[str] = mapped_column(Text, default="We would love to hear what you are planning.")
+    submit_label: Mapped[str] = mapped_column(String(80), default="Send my enquiry")
+    success_message: Mapped[str] = mapped_column(Text, default="Thank you - your enquiry has arrived safely.")
+    ask_partner_name: Mapped[bool] = mapped_column(Boolean, default=True)
+    ask_phone: Mapped[bool] = mapped_column(Boolean, default=True)
+    ask_venue: Mapped[bool] = mapped_column(Boolean, default=True)
+    ask_package_interest: Mapped[bool] = mapped_column(Boolean, default=True)
+    ask_message: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class Enquiry(Base):
+    __tablename__ = "enquiries"
+    __table_args__ = (Index("ix_enquiries_tenant_created", "tenant_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    first_name: Mapped[str] = mapped_column(String(100))
+    partner_name: Mapped[str] = mapped_column(String(160), default="")
+    email: Mapped[str] = mapped_column(String(254))
+    phone: Mapped[str] = mapped_column(String(50), default="")
+    event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    venue: Mapped[str] = mapped_column(String(240), default="")
+    package_interest: Mapped[str] = mapped_column(String(160), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="new", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MailboxSetting(Base):
+    __tablename__ = "mailbox_settings"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    from_name: Mapped[str] = mapped_column(String(160), default="")
+    email_address: Mapped[str] = mapped_column(String(254), default="")
+    smtp_host: Mapped[str] = mapped_column(String(255), default="")
+    smtp_port: Mapped[int] = mapped_column(default=465)
+    smtp_security: Mapped[str] = mapped_column(String(20), default="ssl")
+    smtp_username: Mapped[str] = mapped_column(String(254), default="")
+    smtp_password_encrypted: Mapped[str] = mapped_column(Text, default="")
+    imap_host: Mapped[str] = mapped_column(String(255), default="")
+    imap_port: Mapped[int] = mapped_column(default=993)
+    imap_security: Mapped[str] = mapped_column(String(20), default="ssl")
+    imap_username: Mapped[str] = mapped_column(String(254), default="")
+    imap_password_encrypted: Mapped[str] = mapped_column(Text, default="")
+    smtp_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    imap_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

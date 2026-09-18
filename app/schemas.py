@@ -118,3 +118,43 @@ class WorkflowStepIn(BaseModel):
     task_title: str = Field(default="", max_length=220)
     is_paused: bool = True
     sort_order: int = Field(default=0, ge=0, le=10000)
+
+
+class EnquiryFormIn(BaseModel):
+    heading: str = Field(min_length=2, max_length=180)
+    introduction: str = Field(default="", max_length=1000)
+    submit_label: str = Field(default="Send my enquiry", min_length=2, max_length=80)
+    success_message: str = Field(default="Thank you - your enquiry has arrived safely.", min_length=2, max_length=1000)
+    ask_partner_name: bool = True
+    ask_phone: bool = True
+    ask_venue: bool = True
+    ask_package_interest: bool = True
+    ask_message: bool = True
+    is_published: bool = False
+
+
+class PublicEnquiryIn(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    partner_name: str = Field(default="", max_length=160)
+    email: EmailStr
+    phone: str = Field(default="", max_length=50)
+    event_date: date | None = None
+    venue: str = Field(default="", max_length=240)
+    package_interest: str = Field(default="", max_length=160)
+    message: str = Field(default="", max_length=4000)
+    website: str = Field(default="", max_length=200)  # Honeypot; must remain empty.
+
+
+class MailboxSettingsIn(BaseModel):
+    from_name: str = Field(min_length=2, max_length=160)
+    email_address: EmailStr
+    smtp_host: str = Field(min_length=3, max_length=255)
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_security: Literal["ssl", "starttls", "none"] = "ssl"
+    smtp_username: str = Field(min_length=1, max_length=254)
+    smtp_password: str = Field(default="", max_length=1000)
+    imap_host: str = Field(min_length=3, max_length=255)
+    imap_port: int = Field(default=993, ge=1, le=65535)
+    imap_security: Literal["ssl", "starttls", "none"] = "ssl"
+    imap_username: str = Field(min_length=1, max_length=254)
+    imap_password: str = Field(default="", max_length=1000)

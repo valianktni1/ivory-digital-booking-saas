@@ -1,5 +1,10 @@
 import base64
+import imaplib
+import ipaddress
 import io
+import socket
+import smtplib
+import ssl
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -14,13 +19,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import Base, SessionLocal, engine, get_db
-from .models import (AuditLog, Booking, Client, Invitation, Membership,
+from .models import (AuditLog, Booking, Client, Enquiry, EnquiryFormConfig,
+                     Invitation, MailboxSetting, Membership,
                      MembershipRole, PackageAddOn, ServicePackage, Tenant,
                      TenantStatus, User, UserSession, Workflow, WorkflowRevision,
                      WorkflowStep)
 from .schemas import (AutomationPauseIn, BookingCreateIn, BrandingPatchIn,
-                      ClientCreateIn, InvitationAcceptIn, LoginIn, AddOnIn,
-                      PackageIn, TenantCreateIn, TenantStatusIn, TotpConfirmIn,
+                      ClientCreateIn, EnquiryFormIn, InvitationAcceptIn, LoginIn,
+                      AddOnIn, MailboxSettingsIn, PackageIn, PublicEnquiryIn,
+                      TenantCreateIn, TenantStatusIn, TotpConfirmIn,
                       WorkflowIn, WorkflowStepIn)
 from .security import (clear_login_failures, create_session, csrf_matches,
                        decrypt_secret, encrypt_secret, find_session,
@@ -91,7 +98,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.2.0-phase-two",
+    version="0.3.0-phase-three",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -159,7 +166,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.18-phase-two", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.18-phase-three-enquiries-mailbox", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -578,11 +585,41 @@ def mark_onboarding(tenant: Tenant, key: str) -> None:
     tenant.onboarding = onboarding
 
 
+def enquiry_form_json(row: EnquiryFormConfig, tenant: Tenant) -> dict:
+    return {"heading": row.heading, "introduction": row.introduction,
+            "submit_label": row.submit_label, "success_message": row.success_message,
+            "ask_partner_name": row.ask_partner_name, "ask_phone": row.ask_phone,
+            "ask_venue": row.ask_venue, "ask_package_interest": row.ask_package_interest,
+            "ask_message": row.ask_message, "is_published": row.is_published,
+            "public_url": f"{settings.client_url.rstrip('/')}/{tenant.slug}/enquire"}
+
+
+def mailbox_json(row: MailboxSetting | None) -> dict:
+    if not row:
+        return {"configured": False, "from_name": "", "email_address": "",
+                "smtp_host": "", "smtp_port": 465, "smtp_security": "ssl",
+                "smtp_username": "", "smtp_has_password": False,
+                "imap_host": "", "imap_port": 993, "imap_security": "ssl",
+                "imap_username": "", "imap_has_password": False,
+                "smtp_verified_at": None, "imap_verified_at": None}
+    return {"configured": bool(row.smtp_password_encrypted and row.imap_password_encrypted),
+            "from_name": row.from_name, "email_address": row.email_address,
+            "smtp_host": row.smtp_host, "smtp_port": row.smtp_port,
+            "smtp_security": row.smtp_security, "smtp_username": row.smtp_username,
+            "smtp_has_password": bool(row.smtp_password_encrypted),
+            "imap_host": row.imap_host, "imap_port": row.imap_port,
+            "imap_security": row.imap_security, "imap_username": row.imap_username,
+            "imap_has_password": bool(row.imap_password_encrypted),
+            "smtp_verified_at": row.smtp_verified_at.isoformat() if row.smtp_verified_at else None,
+            "imap_verified_at": row.imap_verified_at.isoformat() if row.imap_verified_at else None}
+
+
 @app.get("/api/studio/dashboard")
 def studio_dashboard(context=Depends(studio_context), db: Session = Depends(get_db)):
     session, membership, tenant = context
     client_count = db.scalar(select(func.count(Client.id)).where(Client.tenant_id == tenant.id)) or 0
     booking_count = db.scalar(select(func.count(Booking.id)).where(Booking.tenant_id == tenant.id)) or 0
+    enquiry_count = db.scalar(select(func.count(Enquiry.id)).where(Enquiry.tenant_id == tenant.id)) or 0
     return {
         "user": {"full_name": session.user.full_name, "email": session.user.email,
                  "role": membership.role.value},
@@ -590,6 +627,7 @@ def studio_dashboard(context=Depends(studio_context), db: Session = Depends(get_
         "onboarding": tenant.onboarding or {},
         "client_count": client_count,
         "booking_count": booking_count,
+        "enquiry_count": enquiry_count,
         "phase": "Foundation ready — booking workflow arrives in the next phase",
     }
 
@@ -762,6 +800,147 @@ def update_workflow_step(workflow_id: str, step_id: str, payload: WorkflowStepIn
     return step_json(row)
 
 
+@app.get("/api/studio/enquiry-form")
+def get_enquiry_form(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    row = db.get(EnquiryFormConfig, tenant.id)
+    if not row:
+        row = EnquiryFormConfig(tenant_id=tenant.id)
+        db.add(row); db.commit(); db.refresh(row)
+    return enquiry_form_json(row, tenant)
+
+
+@app.get("/api/studio/enquiries")
+def list_enquiries(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    rows = db.scalars(select(Enquiry).where(Enquiry.tenant_id == tenant.id)
+                      .order_by(Enquiry.created_at.desc()).limit(250)).all()
+    return [{"id": row.id, "first_name": row.first_name, "partner_name": row.partner_name,
+             "email": row.email, "phone": row.phone,
+             "event_date": row.event_date.isoformat() if row.event_date else None,
+             "venue": row.venue, "package_interest": row.package_interest,
+             "message": row.message, "status": row.status,
+             "created_at": row.created_at.isoformat()} for row in rows]
+
+
+@app.put("/api/studio/enquiry-form")
+def save_enquiry_form(payload: EnquiryFormIn, request: Request,
+                      session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.get(EnquiryFormConfig, membership.tenant_id)
+    if not row:
+        row = EnquiryFormConfig(tenant_id=membership.tenant_id)
+        db.add(row)
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    onboarding = dict(tenant.onboarding or {}); onboarding["enquiry_form"] = True; tenant.onboarding = onboarding
+    audit(db, "enquiry_form_updated", "enquiry_form", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"published": row.is_published})
+    db.commit()
+    return enquiry_form_json(row, tenant)
+
+
+@app.get("/api/studio/mailbox")
+def get_mailbox(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    return mailbox_json(db.get(MailboxSetting, tenant.id))
+
+
+@app.put("/api/studio/mailbox")
+def save_mailbox(payload: MailboxSettingsIn, request: Request,
+                 session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.get(MailboxSetting, membership.tenant_id)
+    if not row:
+        row = MailboxSetting(tenant_id=membership.tenant_id)
+        db.add(row)
+    for key in ("from_name", "email_address", "smtp_host", "smtp_port", "smtp_security",
+                "smtp_username", "imap_host", "imap_port", "imap_security", "imap_username"):
+        setattr(row, key, getattr(payload, key))
+    if payload.smtp_password:
+        row.smtp_password_encrypted = encrypt_secret(payload.smtp_password)
+        row.smtp_verified_at = None
+    elif not row.smtp_password_encrypted:
+        raise HTTPException(422, "Enter the outgoing mail password")
+    if payload.imap_password:
+        row.imap_password_encrypted = encrypt_secret(payload.imap_password)
+        row.imap_verified_at = None
+    elif not row.imap_password_encrypted:
+        raise HTTPException(422, "Enter the incoming mail password")
+    onboarding = dict(tenant.onboarding or {}); onboarding["mailbox"] = True; tenant.onboarding = onboarding
+    audit(db, "mailbox_settings_updated", "mailbox", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"email_address": row.email_address, "passwords_logged": False})
+    db.commit()
+    return mailbox_json(row)
+
+
+def test_smtp(row: MailboxSetting) -> None:
+    ensure_public_mail_host(row.smtp_host, row.smtp_port, {25, 465, 587, 2525})
+    password = decrypt_secret(row.smtp_password_encrypted)
+    context = ssl.create_default_context()
+    if row.smtp_security == "ssl":
+        connection = smtplib.SMTP_SSL(row.smtp_host, row.smtp_port, timeout=10, context=context)
+    else:
+        connection = smtplib.SMTP(row.smtp_host, row.smtp_port, timeout=10)
+    try:
+        connection.ehlo()
+        if row.smtp_security == "starttls": connection.starttls(context=context); connection.ehlo()
+        connection.login(row.smtp_username, password)
+    finally:
+        try: connection.quit()
+        except Exception: connection.close()
+
+
+def test_imap(row: MailboxSetting) -> None:
+    ensure_public_mail_host(row.imap_host, row.imap_port, {143, 993})
+    password = decrypt_secret(row.imap_password_encrypted)
+    if row.imap_security == "ssl":
+        connection = imaplib.IMAP4_SSL(row.imap_host, row.imap_port, ssl_context=ssl.create_default_context(), timeout=10)
+    else:
+        connection = imaplib.IMAP4(row.imap_host, row.imap_port, timeout=10)
+        if row.imap_security == "starttls": connection.starttls(ssl_context=ssl.create_default_context())
+    try: connection.login(row.imap_username, password)
+    finally:
+        try: connection.logout()
+        except Exception: pass
+
+
+def ensure_public_mail_host(host: str, port: int, allowed_ports: set[int]) -> None:
+    if port not in allowed_ports:
+        raise ValueError("Unsupported mail port")
+    lowered = host.strip().lower().rstrip(".")
+    if lowered in {"localhost", "localhost.localdomain"} or lowered.endswith((".local", ".internal", ".localhost")):
+        raise ValueError("Private mail hosts are not permitted")
+    addresses = {item[4][0] for item in socket.getaddrinfo(lowered, port, type=socket.SOCK_STREAM)}
+    if not addresses:
+        raise ValueError("Mail host did not resolve")
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise ValueError("Private or reserved mail addresses are not permitted")
+
+
+@app.post("/api/studio/mailbox/test/{protocol}")
+def test_mailbox(protocol: str, request: Request,
+                 session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.get(MailboxSetting, membership.tenant_id)
+    if not row or protocol not in {"smtp", "imap"}:
+        raise HTTPException(404, "Mail settings not found")
+    try:
+        (test_smtp if protocol == "smtp" else test_imap)(row)
+    except Exception as exc:
+        audit(db, f"{protocol}_connection_failed", "mailbox", tenant.id, actor=session.user,
+              tenant_id=tenant.id, request=request, detail={"error_type": type(exc).__name__})
+        db.commit()
+        raise HTTPException(422, f"The {protocol.upper()} connection was not accepted. Check the server, port, security and login") from exc
+    setattr(row, f"{protocol}_verified_at", utcnow())
+    audit(db, f"{protocol}_connection_verified", "mailbox", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return {"ok": True, "protocol": protocol, "verified_at": getattr(row, f"{protocol}_verified_at").isoformat()}
+
+
 @app.get("/api/studio/clients")
 def list_clients(context=Depends(studio_context), db: Session = Depends(get_db)):
     _, _, tenant = context
@@ -835,3 +1014,51 @@ def public_business(slug: str, db: Session = Depends(get_db)):
         "welcome_message": branding.get("welcome_message") or "Welcome to your private booking area.",
         "portal_status": "ready_for_phase_two",
     }
+
+
+def public_tenant(slug: str, db: Session) -> Tenant:
+    tenant = db.scalar(select(Tenant).where(Tenant.slug == slug))
+    if not tenant or tenant.status in {TenantStatus.SUSPENDED, TenantStatus.CANCELLED}:
+        raise HTTPException(404, "This enquiry form is not available")
+    if tenant.status == TenantStatus.TRIAL and aware(tenant.trial_ends_at) <= utcnow():
+        raise HTTPException(404, "This enquiry form is not available")
+    set_database_tenant(db, tenant.id)
+    return tenant
+
+
+@app.get("/api/public/business/{slug}/enquiry-form")
+def public_enquiry_form(slug: str, db: Session = Depends(get_db)):
+    tenant = public_tenant(slug, db)
+    row = db.get(EnquiryFormConfig, tenant.id)
+    if not row or not row.is_published:
+        raise HTTPException(404, "This enquiry form has not been published yet")
+    packages = db.scalars(select(ServicePackage).where(
+        ServicePackage.tenant_id == tenant.id, ServicePackage.is_active.is_(True)
+    ).order_by(ServicePackage.sort_order, ServicePackage.created_at)).all()
+    branding = tenant.branding or {}
+    result = enquiry_form_json(row, tenant)
+    result.update({"display_name": branding.get("display_name") or tenant.display_name,
+                   "accent_colour": branding.get("accent_colour") or "#a9782e",
+                   "packages": [{"id": item.id, "name": item.name,
+                                  "price_pence": item.price_pence} for item in packages]})
+    result.pop("public_url", None)
+    return result
+
+
+@app.post("/api/public/business/{slug}/enquiries", status_code=201)
+def submit_public_enquiry(slug: str, payload: PublicEnquiryIn, request: Request,
+                          db: Session = Depends(get_db)):
+    tenant = public_tenant(slug, db)
+    config = db.get(EnquiryFormConfig, tenant.id)
+    if not config or not config.is_published:
+        raise HTTPException(404, "This enquiry form has not been published yet")
+    if payload.website:
+        return {"ok": True, "message": config.success_message}
+    row = Enquiry(tenant_id=tenant.id, **payload.model_dump(exclude={"website"}))
+    db.add(row); db.flush()
+    audit(db, "enquiry_received", "enquiry", row.id, tenant_id=tenant.id,
+          request=request, detail={"workflow_trigger_recorded": True,
+                                   "automatic_sending_paused": tenant.automations_paused})
+    db.commit()
+    return {"ok": True, "enquiry_id": row.id, "message": config.success_message,
+            "automatic_reply": "paused" if tenant.automations_paused else "not_enabled"}

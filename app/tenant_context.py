@@ -43,7 +43,8 @@ def install_postgres_rls(db: Session) -> None:
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
     for table_name in ("clients", "bookings", "service_packages", "package_add_ons",
-                       "workflows", "workflow_steps", "workflow_revisions"):
+                       "workflows", "workflow_steps", "workflow_revisions",
+                       "enquiry_form_configs", "enquiries", "mailbox_settings"):
         db.execute(text(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY"))
         db.execute(text(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY"))
         db.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table_name}"))

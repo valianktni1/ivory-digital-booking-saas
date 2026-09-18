@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#17211f">
   <title>Ivory Digital Studio</title>
-  <link rel="stylesheet" href="/styles.css?v=phase-two">
+  <link rel="stylesheet" href="/styles.css?v=phase-three">
 </head>
 <body>
   <section id="auth-view" class="auth-shell">
@@ -31,13 +31,15 @@
       <nav>
         <span>WORKSPACE</span>
         <button class="active" data-section="home"><i>⌂</i>Home</button>
-        <button disabled><i>♡</i>Enquiries <em>Soon</em></button>
+        <button data-section="enquiries"><i>♡</i>Enquiries <em id="enquiry-count">0</em></button>
         <button disabled><i>◇</i>Weddings <em>Soon</em></button>
         <button disabled><i>□</i>Calendar <em>Soon</em></button>
         <span>SETUP</span>
         <button data-section="brand"><i>✦</i>Business & brand</button>
+        <button data-section="enquiry"><i>?</i>Enquiry form</button>
         <button data-section="packages"><i>£</i>Packages & pricing</button>
         <button data-section="workflow"><i>✉</i>Emails & workflow</button>
+        <button data-section="mailbox"><i>@</i>Email connection</button>
       </nav>
       <div class="profile"><span id="initials">--</span><div><strong id="profile-name">Studio owner</strong><small id="profile-role">Owner</small></div><button id="logout" title="Sign out">↗</button></div>
     </aside>
@@ -74,6 +76,11 @@
           </section>
         </div>
 
+        <div id="enquiries-section" class="hidden">
+          <header class="section-head action-head"><div><button class="text-button back-home">← Back to home</button><span class="eyebrow">ENQUIRIES</span><h1>New conversations</h1><p>Every submitted enquiry appears here before it enters the rest of the client journey.</p></div><button class="button quiet" data-section="enquiry">Edit enquiry form</button></header>
+          <section id="enquiry-list" class="enquiry-list"></section>
+        </div>
+
         <div id="packages-section" class="hidden">
           <header class="section-head action-head"><div><button class="text-button back-home">← Back to home</button><span class="eyebrow">PACKAGES & PRICING</span><h1>Shape your offer</h1><p>Create clear choices for couples. Nothing is pre-selected for them.</p></div><button id="new-package" class="button primary">＋ Add package</button></header>
           <div class="safety-note"><span>✓</span><div><strong>Couples stay in control</strong><p>Packages and ordinary add-ons begin unselected. Use mandatory only for an unavoidable charge such as agreed travel.</p></div></div>
@@ -85,6 +92,18 @@
           <div class="paused-banner"><span>Ⅱ</span><div><strong>All automatic sending is paused</strong><p>You can safely build and edit this workflow. This release does not send emails or texts.</p></div></div>
           <section class="workflow-layout"><article class="panel workflow-panel"><header><div><span class="eyebrow">MAIN CLIENT JOURNEY</span><h2 id="workflow-name">Main client journey</h2></div><span id="workflow-revision" class="revision">Draft</span></header><div id="workflow-steps" class="timeline"></div></article><aside class="panel guidance"><span class="eyebrow">A CALMER WAY TO WORK</span><h3>Build it around you</h3><p>Add reminders for yourself, helpful messages for couples, and pauses wherever a personal reply makes more sense.</p><ul><li>Each step can be paused separately</li><li>Manual tasks never contact a couple</li><li>Every edit is revisioned</li></ul></aside></section>
         </div>
+
+        <div id="enquiry-section" class="hidden">
+          <header class="section-head action-head"><div><button class="text-button back-home">← Back to home</button><span class="eyebrow">ENQUIRY FORM</span><h1>Your first hello</h1><p>Create the form couples complete before your workflow begins.</p></div><a id="enquiry-preview" class="button quiet link-button" target="_blank" rel="noopener">Preview form ↗</a></header>
+          <div class="safety-note"><span>1</span><div><strong>This is the beginning of the journey</strong><p>When a couple submits this form, the system records “New enquiry submitted”. Your initial email can then be attached to that trigger.</p></div></div>
+          <form id="enquiry-form" class="panel form-panel enquiry-editor"><div class="form-grid"><label class="wide-field">Form heading<input id="enquiry-heading" required maxlength="180"></label><label class="wide-field">Warm introduction<textarea id="enquiry-introduction" rows="3"></textarea></label><label>Button wording<input id="enquiry-submit-label" required></label><label>Confirmation message<textarea id="enquiry-success" rows="3" required></textarea></label><fieldset class="wide-field field-options"><legend>Details to ask for</legend><label class="check"><input id="ask-partner" type="checkbox"> Partner’s name</label><label class="check"><input id="ask-phone" type="checkbox"> Telephone number</label><label class="check"><input id="ask-venue" type="checkbox"> Venue</label><label class="check"><input id="ask-package" type="checkbox"> Package interest</label><label class="check"><input id="ask-message" type="checkbox"> Their message</label></fieldset><label class="publish-toggle wide-field"><input id="enquiry-published" type="checkbox"><span><strong>Publish this enquiry form</strong><small>Leave this off while you are preparing it.</small></span></label></div><p id="enquiry-error" class="error"></p><button class="button primary" type="submit">Save enquiry form</button></form>
+        </div>
+
+        <div id="mailbox-section" class="hidden">
+          <header class="section-head"><button class="text-button back-home">← Back to home</button><span class="eyebrow">EMAIL CONNECTION</span><h1>Send and receive as yourself</h1><p>Connect the photographer’s own professional mailbox using SMTP and IMAP.</p></header>
+          <div class="paused-banner"><span>Ⅱ</span><div><strong>Connecting a mailbox does not start automations</strong><p>We test the login only. Messages remain paused until the complete journey is reviewed and deliberately enabled.</p></div></div>
+          <form id="mailbox-form" class="panel form-panel mailbox-editor"><div class="form-grid"><label>Sender name<input id="mail-from-name" required></label><label>Email address<input id="mail-address" type="email" required></label><div class="server-block wide-field"><header><div><span class="eyebrow">OUTGOING MAIL</span><h3>SMTP</h3></div><span id="smtp-status" class="connection-status">Not tested</span></header><div class="form-grid nested"><label>Server<input id="smtp-host" placeholder="smtp.example.com" required></label><label>Port<input id="smtp-port" type="number" value="465" required></label><label>Security<select id="smtp-security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></label><label>Username<input id="smtp-username" required></label><label class="wide-field">Password<input id="smtp-password" type="password" autocomplete="new-password"><small id="smtp-password-note">Required when first connecting.</small></label></div><button id="test-smtp" class="button quiet" type="button">Test outgoing mail</button></div><div class="server-block wide-field"><header><div><span class="eyebrow">INCOMING MAIL</span><h3>IMAP</h3></div><span id="imap-status" class="connection-status">Not tested</span></header><div class="form-grid nested"><label>Server<input id="imap-host" placeholder="imap.example.com" required></label><label>Port<input id="imap-port" type="number" value="993" required></label><label>Security<select id="imap-security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></label><label>Username<input id="imap-username" required></label><label class="wide-field">Password<input id="imap-password" type="password" autocomplete="new-password"><small id="imap-password-note">Required when first connecting.</small></label></div><button id="test-imap" class="button quiet" type="button">Test incoming mail</button></div></div><p id="mailbox-error" class="error"></p><button class="button primary" type="submit">Save email connection</button></form>
+        </div>
       </div>
     </main>
   </div>
@@ -92,6 +111,6 @@
   <dialog id="package-dialog" class="editor"><form id="package-form"><input id="package-id" type="hidden"><header><div><span class="eyebrow">PACKAGE</span><h2 id="package-dialog-title">Add a package</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Package name<input id="package-name" required maxlength="160"></label><label>Short description<input id="package-description" maxlength="300"></label><label>Full price (£)<input id="package-price" type="number" min="0" step="0.01" required></label><label>Booking fee (£)<input id="package-fee" type="number" min="0" step="0.01" value="100" required></label><label>Balance due before wedding (days)<input id="package-balance" type="number" min="0" max="730" value="45" required></label><label class="wide-field">What’s included <small>One item per line</small><textarea id="package-inclusions" rows="6"></textarea></label><label class="check"><input id="package-featured" type="checkbox"> Highlight as a popular choice</label><label class="check"><input id="package-active" type="checkbox" checked> Available to couples</label></div><p id="package-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save package</button></footer></form></dialog>
   <dialog id="addon-dialog" class="editor"><form id="addon-form"><input id="addon-id" type="hidden"><header><div><span class="eyebrow">ADD-ON</span><h2 id="addon-dialog-title">Add an extra</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Name<input id="addon-name" required></label><label>Price (£)<input id="addon-price" type="number" min="0" step="0.01" value="0" required></label><label class="wide-field">Description<textarea id="addon-description" rows="3"></textarea></label><label>How it is selected<select id="addon-mode"><option value="optional">Optional — couple chooses</option><option value="mandatory">Mandatory — locked on</option></select></label><label id="reason-wrap" class="hidden">Why it is mandatory<input id="addon-reason" maxlength="300"></label><label class="check"><input id="addon-active" type="checkbox" checked> Available to couples</label></div><p class="helper">Complimentary extras can be saved at £0. Mandatory extras always need a clear reason.</p><p id="addon-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save add-on</button></footer></form></dialog>
   <dialog id="step-dialog" class="editor"><form id="step-form"><input id="step-id" type="hidden"><header><div><span class="eyebrow">WORKFLOW STEP</span><h2 id="step-dialog-title">Add a step</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Step name<input id="step-name" required></label><label>Starts from<select id="step-trigger"></select></label><label>When<select id="step-direction"><option value="immediately">Immediately</option><option value="after">After</option><option value="before">Before</option></select></label><label id="offset-wrap">Amount<div class="split"><input id="step-offset" type="number" min="0" value="1"><select id="step-unit"><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days" selected>Days</option><option value="weeks">Weeks</option></select></div></label><label>Action<select id="step-action"><option value="manual_task">Manual task for me</option><option value="email">Email to couple</option></select></label><label id="task-wrap">Task title<input id="step-task"></label><label id="subject-wrap" class="hidden">Email subject<input id="step-subject"></label><label id="message-wrap" class="wide-field hidden">Email message<textarea id="step-message" rows="7"></textarea></label><label class="check"><input id="step-paused" type="checkbox" checked> Pause this step</label></div><p class="helper">New steps always save paused. You can prepare everything without contacting anyone.</p><p id="step-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save step</button></footer></form></dialog>
-  <script src="/app.js?v=phase-two" defer></script>
+  <script src="/app.js?v=phase-three" defer></script>
 </body>
 </html>

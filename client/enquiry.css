@@ -1,0 +1,13 @@
+.enquiry{align-self:start;width:min(820px,100%);margin:55px auto;padding:48px;border:1px solid rgba(169,120,46,.21);border-radius:29px;background:rgba(255,255,255,.97);box-shadow:0 30px 100px rgba(27,38,34,.12)}
+.enquiry>h1{margin:11px 0 4px;font:500 19px Georgia,serif;color:var(--accent)}
+.enquiry>h2{margin:20px 0 10px;font:500 clamp(31px,6vw,47px) Georgia,serif;letter-spacing:-.03em}
+.enquiry>p{margin:0 0 30px;color:var(--muted);font-size:13px;line-height:1.7}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:17px}
+.fields label{display:grid;gap:8px;color:#36423e;font-size:11px;font-weight:750}
+.fields input,.fields select,.fields textarea{width:100%;min-height:48px;padding:0 13px;border:1px solid #d8ddd7;border-radius:11px;background:#fff;font:inherit;outline:0}
+.fields textarea{padding-top:13px;resize:vertical}.fields input:focus,.fields select:focus,.fields textarea:focus{border-color:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 13%,transparent)}
+.fields .full{grid-column:1/-1}.honey{position:absolute!important;left:-10000px!important}
+#public-enquiry-form>button{min-height:48px;margin-top:22px;padding:0 20px;border:0;border-radius:11px;color:#fff;background:var(--accent);font-size:11px;font-weight:850}
+#public-enquiry-form>small{display:block;margin-top:13px;color:#84908c;font-size:9px}.form-error{min-height:16px;margin:12px 0 0;color:#9b3e3e;font-size:10px}
+.success{padding:42px 20px;text-align:center}.success>span{width:52px;height:52px;display:grid;place-items:center;margin:auto;border-radius:50%;color:#fff;background:#23745f}.success h2{margin:16px 0 8px;font:500 27px Georgia,serif}.success p{margin:0;color:var(--muted);font-size:12px}
+@media(max-width:600px){.enquiry{margin:30px auto;padding:32px 22px;border-radius:22px}.fields{grid-template-columns:1fr}.fields .full{grid-column:1}.enquiry>h2{font-size:33px}#public-enquiry-form>button{width:100%}}
