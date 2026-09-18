@@ -95,6 +95,54 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert len(alpha_list) == 1
         assert beta_list == []
 
+        package = alpha_client.post("/api/studio/packages", headers=csrf(alpha_client), json={
+            "name": "Story Collection", "short_description": "A full wedding story",
+            "price_pence": 149500, "booking_fee_pence": 10000,
+            "balance_due_days": 45, "inclusions": ["Photography", "Online gallery"],
+            "is_featured": True, "is_active": True, "sort_order": 0,
+        })
+        assert package.status_code == 201, package.text
+        assert len(alpha_client.get("/api/studio/packages").json()) == 1
+        assert beta_client.get("/api/studio/packages").json() == []
+        cross_package = beta_client.patch(
+            f"/api/studio/packages/{package.json()['id']}", headers=csrf(beta_client),
+            json={"name": "Changed", "price_pence": 1000, "booking_fee_pence": 1000},
+        )
+        assert cross_package.status_code == 404
+        excessive_fee = alpha_client.post("/api/studio/packages", headers=csrf(alpha_client), json={
+            "name": "Invalid package", "price_pence": 5000, "booking_fee_pence": 10000,
+        })
+        assert excessive_fee.status_code == 422
+
+        mandatory_without_reason = alpha_client.post(
+            "/api/studio/add-ons", headers=csrf(alpha_client),
+            json={"name": "Travel", "price_pence": 5000, "selection_mode": "mandatory"},
+        )
+        assert mandatory_without_reason.status_code == 422
+        optional = alpha_client.post("/api/studio/add-ons", headers=csrf(alpha_client), json={
+            "name": "Complimentary album", "price_pence": 0, "selection_mode": "optional",
+        })
+        assert optional.status_code == 201
+        assert beta_client.get("/api/studio/add-ons").json() == []
+
+        workflow = alpha_client.get("/api/studio/workflows").json()[0]
+        step = alpha_client.post(
+            f"/api/studio/workflows/{workflow['id']}/steps", headers=csrf(alpha_client), json={
+                "name": "Check they received the quote", "trigger_event": "quote_sent",
+                "timing_direction": "after", "offset_value": 1, "offset_unit": "days",
+                "action_type": "email", "subject": "Just checking in",
+                "message_body": "I wanted to make sure your quote arrived.",
+                "is_paused": False,
+            },
+        )
+        assert step.status_code == 201, step.text
+        assert step.json()["is_paused"] is True
+        assert beta_client.get("/api/studio/workflows").json()[0]["steps"] == []
+        dashboard = alpha_client.get("/api/studio/dashboard").json()
+        assert dashboard["tenant"]["automations_paused"] is True
+        assert dashboard["onboarding"]["packages"] is True
+        assert dashboard["onboarding"]["templates"] is True
+
         public = manager.get("/api/public/business/alpha-weddings")
         assert public.status_code == 200
         assert set(public.json()) == {

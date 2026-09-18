@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#17211f">
   <title>Ivory Digital Studio</title>
-  <link rel="stylesheet" href="/styles.css?v=phase-one">
+  <link rel="stylesheet" href="/styles.css?v=phase-two">
 </head>
 <body>
   <section id="auth-view" class="auth-shell">
@@ -36,6 +36,8 @@
         <button disabled><i>□</i>Calendar <em>Soon</em></button>
         <span>SETUP</span>
         <button data-section="brand"><i>✦</i>Business & brand</button>
+        <button data-section="packages"><i>£</i>Packages & pricing</button>
+        <button data-section="workflow"><i>✉</i>Emails & workflow</button>
       </nav>
       <div class="profile"><span id="initials">--</span><div><strong id="profile-name">Studio owner</strong><small id="profile-role">Owner</small></div><button id="logout" title="Sign out">↗</button></div>
     </aside>
@@ -71,10 +73,25 @@
             <article class="portal-preview"><span>COUPLE PREVIEW</span><div><small>PRIVATE CLIENT AREA</small><h2 id="preview-name">Your business</h2><p id="preview-message">Welcome to your private booking area.</p><button type="button">View your booking</button></div><footer>Securely powered by Ivory Digital</footer></article>
           </section>
         </div>
+
+        <div id="packages-section" class="hidden">
+          <header class="section-head action-head"><div><button class="text-button back-home">← Back to home</button><span class="eyebrow">PACKAGES & PRICING</span><h1>Shape your offer</h1><p>Create clear choices for couples. Nothing is pre-selected for them.</p></div><button id="new-package" class="button primary">＋ Add package</button></header>
+          <div class="safety-note"><span>✓</span><div><strong>Couples stay in control</strong><p>Packages and ordinary add-ons begin unselected. Use mandatory only for an unavoidable charge such as agreed travel.</p></div></div>
+          <section class="catalogue-grid"><article class="panel catalogue"><header><div><span class="eyebrow">YOUR PACKAGES</span><h2>Photography & film collections</h2></div></header><div id="package-list" class="card-list"></div></article><article class="panel catalogue"><header><div><span class="eyebrow">OPTIONAL EXTRAS</span><h2>Add-ons</h2></div><button id="new-addon" class="button quiet">＋ Add</button></header><div id="addon-list" class="card-list compact"></div></article></section>
+        </div>
+
+        <div id="workflow-section" class="hidden">
+          <header class="section-head action-head"><div><button class="text-button back-home">← Back to home</button><span class="eyebrow">EMAILS & WORKFLOW</span><h1>Your journey, your timing</h1><p>Plan manual tasks and emails around the moments that matter.</p></div><button id="new-step" class="button primary">＋ Add step</button></header>
+          <div class="paused-banner"><span>Ⅱ</span><div><strong>All automatic sending is paused</strong><p>You can safely build and edit this workflow. This release does not send emails or texts.</p></div></div>
+          <section class="workflow-layout"><article class="panel workflow-panel"><header><div><span class="eyebrow">MAIN CLIENT JOURNEY</span><h2 id="workflow-name">Main client journey</h2></div><span id="workflow-revision" class="revision">Draft</span></header><div id="workflow-steps" class="timeline"></div></article><aside class="panel guidance"><span class="eyebrow">A CALMER WAY TO WORK</span><h3>Build it around you</h3><p>Add reminders for yourself, helpful messages for couples, and pauses wherever a personal reply makes more sense.</p><ul><li>Each step can be paused separately</li><li>Manual tasks never contact a couple</li><li>Every edit is revisioned</li></ul></aside></section>
+        </div>
       </div>
     </main>
   </div>
   <div id="toast" class="toast hidden" role="status"></div>
-  <script src="/app.js?v=phase-one" defer></script>
+  <dialog id="package-dialog" class="editor"><form id="package-form"><input id="package-id" type="hidden"><header><div><span class="eyebrow">PACKAGE</span><h2 id="package-dialog-title">Add a package</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Package name<input id="package-name" required maxlength="160"></label><label>Short description<input id="package-description" maxlength="300"></label><label>Full price (£)<input id="package-price" type="number" min="0" step="0.01" required></label><label>Booking fee (£)<input id="package-fee" type="number" min="0" step="0.01" value="100" required></label><label>Balance due before wedding (days)<input id="package-balance" type="number" min="0" max="730" value="45" required></label><label class="wide-field">What’s included <small>One item per line</small><textarea id="package-inclusions" rows="6"></textarea></label><label class="check"><input id="package-featured" type="checkbox"> Highlight as a popular choice</label><label class="check"><input id="package-active" type="checkbox" checked> Available to couples</label></div><p id="package-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save package</button></footer></form></dialog>
+  <dialog id="addon-dialog" class="editor"><form id="addon-form"><input id="addon-id" type="hidden"><header><div><span class="eyebrow">ADD-ON</span><h2 id="addon-dialog-title">Add an extra</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Name<input id="addon-name" required></label><label>Price (£)<input id="addon-price" type="number" min="0" step="0.01" value="0" required></label><label class="wide-field">Description<textarea id="addon-description" rows="3"></textarea></label><label>How it is selected<select id="addon-mode"><option value="optional">Optional — couple chooses</option><option value="mandatory">Mandatory — locked on</option></select></label><label id="reason-wrap" class="hidden">Why it is mandatory<input id="addon-reason" maxlength="300"></label><label class="check"><input id="addon-active" type="checkbox" checked> Available to couples</label></div><p class="helper">Complimentary extras can be saved at £0. Mandatory extras always need a clear reason.</p><p id="addon-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save add-on</button></footer></form></dialog>
+  <dialog id="step-dialog" class="editor"><form id="step-form"><input id="step-id" type="hidden"><header><div><span class="eyebrow">WORKFLOW STEP</span><h2 id="step-dialog-title">Add a step</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Step name<input id="step-name" required></label><label>Starts from<select id="step-trigger"></select></label><label>When<select id="step-direction"><option value="immediately">Immediately</option><option value="after">After</option><option value="before">Before</option></select></label><label id="offset-wrap">Amount<div class="split"><input id="step-offset" type="number" min="0" value="1"><select id="step-unit"><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days" selected>Days</option><option value="weeks">Weeks</option></select></div></label><label>Action<select id="step-action"><option value="manual_task">Manual task for me</option><option value="email">Email to couple</option></select></label><label id="task-wrap">Task title<input id="step-task"></label><label id="subject-wrap" class="hidden">Email subject<input id="step-subject"></label><label id="message-wrap" class="wide-field hidden">Email message<textarea id="step-message" rows="7"></textarea></label><label class="check"><input id="step-paused" type="checkbox" checked> Pause this step</label></div><p class="helper">New steps always save paused. You can prepare everything without contacting anyone.</p><p id="step-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save step</button></footer></form></dialog>
+  <script src="/app.js?v=phase-two" defer></script>
 </body>
 </html>

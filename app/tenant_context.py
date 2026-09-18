@@ -42,7 +42,8 @@ def membership_for(db: Session, user: User, tenant_id: str | None = None) -> Mem
 def install_postgres_rls(db: Session) -> None:
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
-    for table_name in ("clients", "bookings"):
+    for table_name in ("clients", "bookings", "service_packages", "package_add_ons",
+                       "workflows", "workflow_steps", "workflow_revisions"):
         db.execute(text(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY"))
         db.execute(text(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY"))
         db.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table_name}"))

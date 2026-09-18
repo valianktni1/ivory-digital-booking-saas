@@ -15,10 +15,13 @@ from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
 from .database import Base, SessionLocal, engine, get_db
 from .models import (AuditLog, Booking, Client, Invitation, Membership,
-                     MembershipRole, Tenant, TenantStatus, User, UserSession)
+                     MembershipRole, PackageAddOn, ServicePackage, Tenant,
+                     TenantStatus, User, UserSession, Workflow, WorkflowRevision,
+                     WorkflowStep)
 from .schemas import (AutomationPauseIn, BookingCreateIn, BrandingPatchIn,
-                      ClientCreateIn, InvitationAcceptIn, LoginIn,
-                      TenantCreateIn, TenantStatusIn, TotpConfirmIn)
+                      ClientCreateIn, InvitationAcceptIn, LoginIn, AddOnIn,
+                      PackageIn, TenantCreateIn, TenantStatusIn, TotpConfirmIn,
+                      WorkflowIn, WorkflowStepIn)
 from .security import (clear_login_failures, create_session, csrf_matches,
                        decrypt_secret, encrypt_secret, find_session,
                        generate_totp_secret, hash_password, login_locked,
@@ -88,7 +91,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.1.0-phase-one",
+    version="0.2.0-phase-two",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -156,7 +159,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.18-phase-one-manager", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.18-phase-two", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -365,6 +368,12 @@ def create_tenant(payload: TenantCreateIn, request: Request,
     )
     db.add(tenant)
     db.flush()
+    db.add(Workflow(
+        tenant_id=tenant.id,
+        name="Main client journey",
+        description="Your enquiry-to-wedding workflow. Add each step in the order you want it to happen.",
+        is_active=False,
+    ))
     invitation, raw = create_invitation(db, tenant, tenant.owner_email)
     tenant_path = settings.tenant_storage_root / tenant.storage_key
     tenant_path.mkdir(parents=True, exist_ok=False)
@@ -504,6 +513,71 @@ def studio_context(session: UserSession = Depends(session_dependency),
     return session, membership, tenant
 
 
+def studio_write_context(session: UserSession, db: Session) -> tuple[Membership, Tenant]:
+    if session.user.is_platform_admin:
+        raise HTTPException(403, "Use Ivory Digital Manager for the platform account")
+    membership = membership_for(db, session.user)
+    if membership.role not in {MembershipRole.OWNER, MembershipRole.ADMIN}:
+        raise HTTPException(403, "Owner or administrator access is required")
+    return membership, db.get(Tenant, membership.tenant_id)
+
+
+def package_json(row: ServicePackage) -> dict:
+    return {"id": row.id, "name": row.name, "short_description": row.short_description,
+            "price_pence": row.price_pence, "booking_fee_pence": row.booking_fee_pence,
+            "balance_due_days": row.balance_due_days, "inclusions": row.inclusions or [],
+            "is_featured": row.is_featured, "is_active": row.is_active,
+            "sort_order": row.sort_order}
+
+
+def add_on_json(row: PackageAddOn) -> dict:
+    return {"id": row.id, "name": row.name, "description": row.description,
+            "price_pence": row.price_pence, "selection_mode": row.selection_mode,
+            "mandatory_reason": row.mandatory_reason, "is_active": row.is_active,
+            "sort_order": row.sort_order}
+
+
+def step_json(row: WorkflowStep) -> dict:
+    return {"id": row.id, "workflow_id": row.workflow_id, "name": row.name,
+            "trigger_event": row.trigger_event, "timing_direction": row.timing_direction,
+            "offset_value": row.offset_value, "offset_unit": row.offset_unit,
+            "action_type": row.action_type, "subject": row.subject,
+            "message_body": row.message_body, "task_title": row.task_title,
+            "is_paused": row.is_paused, "sort_order": row.sort_order}
+
+
+def workflow_json(row: Workflow, db: Session) -> dict:
+    steps = db.scalars(select(WorkflowStep).where(
+        WorkflowStep.tenant_id == row.tenant_id, WorkflowStep.workflow_id == row.id
+    ).order_by(WorkflowStep.sort_order, WorkflowStep.created_at)).all()
+    return {"id": row.id, "name": row.name, "description": row.description,
+            "is_active": row.is_active, "sort_order": row.sort_order,
+            "revision": row.revision, "steps": [step_json(item) for item in steps]}
+
+
+def save_workflow_revision(db: Session, workflow: Workflow, actor: User) -> None:
+    db.add(WorkflowRevision(tenant_id=workflow.tenant_id, workflow_id=workflow.id,
+                            revision=workflow.revision,
+                            snapshot=workflow_json(workflow, db), actor_user_id=actor.id))
+    workflow.revision += 1
+
+
+def validate_package(payload: PackageIn) -> None:
+    if payload.booking_fee_pence > payload.price_pence:
+        raise HTTPException(422, "The booking fee cannot be more than the package price")
+
+
+def validate_add_on(payload: AddOnIn) -> None:
+    if payload.selection_mode == "mandatory" and not payload.mandatory_reason:
+        raise HTTPException(422, "Explain why this add-on is mandatory for the couple")
+
+
+def mark_onboarding(tenant: Tenant, key: str) -> None:
+    onboarding = dict(tenant.onboarding or {})
+    onboarding[key] = True
+    tenant.onboarding = onboarding
+
+
 @app.get("/api/studio/dashboard")
 def studio_dashboard(context=Depends(studio_context), db: Session = Depends(get_db)):
     session, membership, tenant = context
@@ -539,6 +613,153 @@ def update_branding(payload: BrandingPatchIn, request: Request,
           tenant_id=tenant.id, request=request)
     db.commit()
     return tenant_json(tenant, db)
+
+
+@app.get("/api/studio/packages")
+def list_packages(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    rows = db.scalars(select(ServicePackage).where(ServicePackage.tenant_id == tenant.id)
+                      .order_by(ServicePackage.sort_order, ServicePackage.created_at)).all()
+    return [package_json(row) for row in rows]
+
+
+@app.post("/api/studio/packages", status_code=201)
+def create_package(payload: PackageIn, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    validate_package(payload)
+    membership, tenant = studio_write_context(session, db)
+    row = ServicePackage(tenant_id=membership.tenant_id, **payload.model_dump())
+    db.add(row); db.flush()
+    if row.is_active: mark_onboarding(tenant, "packages")
+    audit(db, "package_created", "service_package", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return package_json(row)
+
+
+@app.patch("/api/studio/packages/{package_id}")
+def update_package(package_id: str, payload: PackageIn, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    validate_package(payload)
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(ServicePackage).where(ServicePackage.id == package_id,
+                    ServicePackage.tenant_id == membership.tenant_id))
+    if not row: raise HTTPException(404, "Package not found")
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    if row.is_active: mark_onboarding(tenant, "packages")
+    audit(db, "package_updated", "service_package", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return package_json(row)
+
+
+@app.get("/api/studio/add-ons")
+def list_add_ons(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    rows = db.scalars(select(PackageAddOn).where(PackageAddOn.tenant_id == tenant.id)
+                      .order_by(PackageAddOn.sort_order, PackageAddOn.created_at)).all()
+    return [add_on_json(row) for row in rows]
+
+
+@app.post("/api/studio/add-ons", status_code=201)
+def create_add_on(payload: AddOnIn, request: Request,
+                  session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    validate_add_on(payload)
+    membership, tenant = studio_write_context(session, db)
+    row = PackageAddOn(tenant_id=membership.tenant_id, **payload.model_dump())
+    db.add(row); db.flush()
+    audit(db, "add_on_created", "package_add_on", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return add_on_json(row)
+
+
+@app.patch("/api/studio/add-ons/{add_on_id}")
+def update_add_on(add_on_id: str, payload: AddOnIn, request: Request,
+                  session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    validate_add_on(payload)
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(PackageAddOn).where(PackageAddOn.id == add_on_id,
+                    PackageAddOn.tenant_id == membership.tenant_id))
+    if not row: raise HTTPException(404, "Add-on not found")
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    audit(db, "add_on_updated", "package_add_on", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return add_on_json(row)
+
+
+@app.get("/api/studio/workflows")
+def list_workflows(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    rows = db.scalars(select(Workflow).where(Workflow.tenant_id == tenant.id)
+                      .order_by(Workflow.sort_order, Workflow.created_at)).all()
+    return [workflow_json(row, db) for row in rows]
+
+
+@app.post("/api/studio/workflows", status_code=201)
+def create_workflow(payload: WorkflowIn, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = Workflow(tenant_id=membership.tenant_id, **payload.model_dump())
+    db.add(row); db.flush()
+    audit(db, "workflow_created", "workflow", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return workflow_json(row, db)
+
+
+@app.patch("/api/studio/workflows/{workflow_id}")
+def update_workflow(workflow_id: str, payload: WorkflowIn, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(Workflow).where(Workflow.id == workflow_id,
+                    Workflow.tenant_id == membership.tenant_id))
+    if not row: raise HTTPException(404, "Workflow not found")
+    save_workflow_revision(db, row, session.user)
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    audit(db, "workflow_updated", "workflow", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return workflow_json(row, db)
+
+
+@app.post("/api/studio/workflows/{workflow_id}/steps", status_code=201)
+def create_workflow_step(workflow_id: str, payload: WorkflowStepIn, request: Request,
+                         session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id,
+                         Workflow.tenant_id == membership.tenant_id))
+    if not workflow: raise HTTPException(404, "Workflow not found")
+    save_workflow_revision(db, workflow, session.user)
+    data = payload.model_dump()
+    data["is_paused"] = True  # Configuration cannot accidentally start sending.
+    row = WorkflowStep(tenant_id=tenant.id, workflow_id=workflow.id, **data)
+    db.add(row); db.flush(); mark_onboarding(tenant, "templates")
+    audit(db, "workflow_step_created", "workflow_step", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"forced_paused": True})
+    db.commit()
+    return step_json(row)
+
+
+@app.patch("/api/studio/workflows/{workflow_id}/steps/{step_id}")
+def update_workflow_step(workflow_id: str, step_id: str, payload: WorkflowStepIn,
+                         request: Request, session: UserSession = Depends(require_csrf),
+                         db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id,
+                         Workflow.tenant_id == membership.tenant_id))
+    if not workflow: raise HTTPException(404, "Workflow not found")
+    row = db.scalar(select(WorkflowStep).where(WorkflowStep.id == step_id,
+                    WorkflowStep.workflow_id == workflow.id,
+                    WorkflowStep.tenant_id == membership.tenant_id))
+    if not row: raise HTTPException(404, "Workflow step not found")
+    save_workflow_revision(db, workflow, session.user)
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    audit(db, "workflow_step_updated", "workflow_step", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return step_json(row)
 
 
 @app.get("/api/studio/clients")

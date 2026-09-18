@@ -155,3 +155,91 @@ class Booking(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     client: Mapped[Client] = relationship()
 
+
+class ServicePackage(Base):
+    __tablename__ = "service_packages"
+    __table_args__ = (
+        Index("ix_service_packages_tenant_order", "tenant_id", "sort_order"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    short_description: Mapped[str] = mapped_column(String(300), default="")
+    price_pence: Mapped[int] = mapped_column(default=0)
+    booking_fee_pence: Mapped[int] = mapped_column(default=10000)
+    balance_due_days: Mapped[int] = mapped_column(default=45)
+    inclusions: Mapped[list] = mapped_column(JSON, default=list)
+    is_featured: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class PackageAddOn(Base):
+    __tablename__ = "package_add_ons"
+    __table_args__ = (
+        Index("ix_package_add_ons_tenant_order", "tenant_id", "sort_order"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(String(400), default="")
+    price_pence: Mapped[int] = mapped_column(default=0)
+    selection_mode: Mapped[str] = mapped_column(String(20), default="optional")
+    mandatory_reason: Mapped[str] = mapped_column(String(300), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class Workflow(Base):
+    __tablename__ = "workflows"
+    __table_args__ = (
+        Index("ix_workflows_tenant_order", "tenant_id", "sort_order"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(String(400), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    revision: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class WorkflowStep(Base):
+    __tablename__ = "workflow_steps"
+    __table_args__ = (
+        Index("ix_workflow_steps_workflow_order", "workflow_id", "sort_order"),
+        Index("ix_workflow_steps_tenant_trigger", "tenant_id", "trigger_event"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    trigger_event: Mapped[str] = mapped_column(String(50))
+    timing_direction: Mapped[str] = mapped_column(String(20), default="after")
+    offset_value: Mapped[int] = mapped_column(default=0)
+    offset_unit: Mapped[str] = mapped_column(String(20), default="days")
+    action_type: Mapped[str] = mapped_column(String(30), default="manual_task")
+    subject: Mapped[str] = mapped_column(String(220), default="")
+    message_body: Mapped[str] = mapped_column(Text, default="")
+    task_title: Mapped[str] = mapped_column(String(220), default="")
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class WorkflowRevision(Base):
+    __tablename__ = "workflow_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(default=1)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
