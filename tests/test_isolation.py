@@ -151,18 +151,43 @@ def test_manager_mfa_and_cross_tenant_isolation():
             "ask_package_interest": True, "ask_message": True, "is_published": True,
         })
         assert enquiry_form.status_code == 200, enquiry_form.text
+        protected_question = enquiry_form.json()["questions"][0]
+        protected_delete = alpha_client.delete(
+            f"/api/studio/enquiry-form/questions/{protected_question['id']}",
+            headers=csrf(alpha_client),
+        )
+        assert protected_delete.status_code == 409
+        custom_question = alpha_client.post(
+            "/api/studio/enquiry-form/questions", headers=csrf(alpha_client), json={
+                "label": "How did you hear about us?", "help_text": "Choose the closest answer",
+                "question_type": "single_choice", "is_required": True, "is_active": True,
+                "options": ["Google", "Friend", "Wedding venue"], "sort_order": 20,
+            },
+        )
+        assert custom_question.status_code == 201, custom_question.text
+        custom_question_id = custom_question.json()["id"]
+        cross_question = beta_client.patch(
+            f"/api/studio/enquiry-form/questions/{custom_question_id}",
+            headers=csrf(beta_client), json={
+                "label": "Should never change", "question_type": "short_text",
+            },
+        )
+        assert cross_question.status_code == 404
         public_form = manager.get("/api/public/business/alpha-weddings/enquiry-form")
         assert public_form.status_code == 200
         assert public_form.json()["packages"][0]["name"] == "Story Collection"
+        assert any(item["question_type"] == "venue" for item in public_form.json()["questions"])
         submitted = manager.post("/api/public/business/alpha-weddings/enquiries", json={
             "first_name": "Taylor", "partner_name": "Jordan", "email": "taylor@example.com",
             "phone": "07000111222", "event_date": "2027-08-14", "venue": "Test Hall",
             "package_interest": "Story Collection", "message": "We love relaxed photographs.",
-            "website": "",
+            "website": "", "answers": {custom_question_id: "Google"},
         })
         assert submitted.status_code == 201, submitted.text
         assert submitted.json()["automatic_reply"] == "paused"
-        assert len(alpha_client.get("/api/studio/enquiries").json()) == 1
+        enquiries = alpha_client.get("/api/studio/enquiries").json()
+        assert len(enquiries) == 1
+        assert enquiries[0]["answers"] == [{"label": "How did you hear about us?", "answer": "Google"}]
         assert beta_client.get("/api/studio/enquiries").json() == []
 
         mailbox = alpha_client.put("/api/studio/mailbox", headers=csrf(alpha_client), json={

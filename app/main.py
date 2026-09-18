@@ -19,14 +19,16 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import Base, SessionLocal, engine, get_db
-from .models import (AuditLog, Booking, Client, Enquiry, EnquiryFormConfig,
-                     Invitation, MailboxSetting, Membership,
+from .models import (AuditLog, Booking, Client, Enquiry, EnquiryAnswer,
+                     EnquiryFormConfig, EnquiryFormQuestion, Invitation,
+                     MailboxSetting, Membership,
                      MembershipRole, PackageAddOn, ServicePackage, Tenant,
                      TenantStatus, User, UserSession, Workflow, WorkflowRevision,
                      WorkflowStep)
 from .schemas import (AutomationPauseIn, BookingCreateIn, BrandingPatchIn,
-                      ClientCreateIn, EnquiryFormIn, InvitationAcceptIn, LoginIn,
-                      AddOnIn, MailboxSettingsIn, PackageIn, PublicEnquiryIn,
+                      ClientCreateIn, EnquiryFormIn, EnquiryQuestionIn,
+                      InvitationAcceptIn, LoginIn, AddOnIn, MailboxSettingsIn,
+                      PackageIn, PublicEnquiryIn,
                       TenantCreateIn, TenantStatusIn, TotpConfirmIn,
                       WorkflowIn, WorkflowStepIn)
 from .security import (clear_login_failures, create_session, csrf_matches,
@@ -98,7 +100,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.3.0-phase-three",
+    version="0.3.1-phase-three-form-builder",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -166,7 +168,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.18-phase-three-enquiries-mailbox", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.18-phase-three-form-builder", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -594,6 +596,52 @@ def enquiry_form_json(row: EnquiryFormConfig, tenant: Tenant) -> dict:
             "public_url": f"{settings.client_url.rstrip('/')}/{tenant.slug}/enquire"}
 
 
+DEFAULT_ENQUIRY_QUESTIONS = (
+    ("first_name", "Your name", "short_text", True),
+    ("partner_name", "Partner's name", "short_text", False),
+    ("email", "Email address", "email", True),
+    ("phone", "Telephone number", "phone", False),
+    ("event_date", "Wedding or event date", "date", True),
+    ("venue", "Wedding or event venue", "venue", True),
+    ("package_interest", "Package you are interested in", "single_choice", False),
+    ("message", "Tell us a little about your plans", "long_text", False),
+)
+
+
+def ensure_default_enquiry_questions(db: Session, tenant: Tenant,
+                                     config: EnquiryFormConfig | None = None) -> list[EnquiryFormQuestion]:
+    existing = list(db.scalars(select(EnquiryFormQuestion).where(
+        EnquiryFormQuestion.tenant_id == tenant.id
+    ).order_by(EnquiryFormQuestion.sort_order, EnquiryFormQuestion.created_at)).all())
+    existing_keys = {row.system_key for row in existing}
+    visibility = {
+        "partner_name": config.ask_partner_name if config else True,
+        "phone": config.ask_phone if config else True,
+        "venue": config.ask_venue if config else True,
+        "package_interest": config.ask_package_interest if config else True,
+        "message": config.ask_message if config else True,
+    }
+    changed = False
+    for order, (key, label, kind, required) in enumerate(DEFAULT_ENQUIRY_QUESTIONS):
+        if key not in existing_keys:
+            row = EnquiryFormQuestion(tenant_id=tenant.id, system_key=key, label=label,
+                                      question_type=kind, is_required=required,
+                                      is_protected=True, is_active=visibility.get(key, True),
+                                      sort_order=order)
+            db.add(row); existing.append(row); changed = True
+    if changed:
+        db.flush()
+    return sorted(existing, key=lambda item: (item.sort_order, item.created_at))
+
+
+def enquiry_question_json(row: EnquiryFormQuestion) -> dict:
+    return {"id": row.id, "system_key": row.system_key, "label": row.label,
+            "help_text": row.help_text, "question_type": row.question_type,
+            "is_required": row.is_required, "is_protected": row.is_protected,
+            "is_active": row.is_active, "options": row.options or [],
+            "sort_order": row.sort_order}
+
+
 def mailbox_json(row: MailboxSetting | None) -> dict:
     if not row:
         return {"configured": False, "from_name": "", "email_address": "",
@@ -806,8 +854,12 @@ def get_enquiry_form(context=Depends(studio_context), db: Session = Depends(get_
     row = db.get(EnquiryFormConfig, tenant.id)
     if not row:
         row = EnquiryFormConfig(tenant_id=tenant.id)
-        db.add(row); db.commit(); db.refresh(row)
-    return enquiry_form_json(row, tenant)
+        db.add(row); db.flush()
+    questions = ensure_default_enquiry_questions(db, tenant, row)
+    db.commit(); db.refresh(row)
+    result = enquiry_form_json(row, tenant)
+    result["questions"] = [enquiry_question_json(item) for item in questions]
+    return result
 
 
 @app.get("/api/studio/enquiries")
@@ -815,12 +867,19 @@ def list_enquiries(context=Depends(studio_context), db: Session = Depends(get_db
     _, _, tenant = context
     rows = db.scalars(select(Enquiry).where(Enquiry.tenant_id == tenant.id)
                       .order_by(Enquiry.created_at.desc()).limit(250)).all()
-    return [{"id": row.id, "first_name": row.first_name, "partner_name": row.partner_name,
+    result = []
+    for row in rows:
+        answers = db.scalars(select(EnquiryAnswer).where(
+            EnquiryAnswer.tenant_id == tenant.id, EnquiryAnswer.enquiry_id == row.id
+        ).order_by(EnquiryAnswer.sort_order)).all()
+        result.append({"id": row.id, "first_name": row.first_name, "partner_name": row.partner_name,
              "email": row.email, "phone": row.phone,
              "event_date": row.event_date.isoformat() if row.event_date else None,
              "venue": row.venue, "package_interest": row.package_interest,
              "message": row.message, "status": row.status,
-             "created_at": row.created_at.isoformat()} for row in rows]
+             "answers": [{"label": item.question_label, "answer": item.answer} for item in answers],
+             "created_at": row.created_at.isoformat()})
+    return result
 
 
 @app.put("/api/studio/enquiry-form")
@@ -835,8 +894,64 @@ def save_enquiry_form(payload: EnquiryFormIn, request: Request,
     onboarding = dict(tenant.onboarding or {}); onboarding["enquiry_form"] = True; tenant.onboarding = onboarding
     audit(db, "enquiry_form_updated", "enquiry_form", tenant.id, actor=session.user,
           tenant_id=tenant.id, request=request, detail={"published": row.is_published})
+    questions = ensure_default_enquiry_questions(db, tenant, row)
     db.commit()
-    return enquiry_form_json(row, tenant)
+    result = enquiry_form_json(row, tenant)
+    result["questions"] = [enquiry_question_json(item) for item in questions]
+    return result
+
+
+@app.post("/api/studio/enquiry-form/questions", status_code=201)
+def create_enquiry_question(payload: EnquiryQuestionIn, request: Request,
+                            session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    if payload.question_type in {"single_choice", "multiple_choice"} and len(payload.options) < 2:
+        raise HTTPException(422, "Add at least two choices for this question")
+    row = EnquiryFormQuestion(tenant_id=membership.tenant_id, **payload.model_dump())
+    db.add(row); db.flush()
+    audit(db, "enquiry_question_created", "enquiry_question", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return enquiry_question_json(row)
+
+
+@app.patch("/api/studio/enquiry-form/questions/{question_id}")
+def update_enquiry_question(question_id: str, payload: EnquiryQuestionIn, request: Request,
+                            session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(EnquiryFormQuestion).where(
+        EnquiryFormQuestion.id == question_id,
+        EnquiryFormQuestion.tenant_id == membership.tenant_id))
+    if not row:
+        raise HTTPException(404, "Question not found")
+    if payload.question_type in {"single_choice", "multiple_choice"} and len(payload.options) < 2:
+        raise HTTPException(422, "Add at least two choices for this question")
+    data = payload.model_dump()
+    if row.is_protected:
+        data["question_type"] = row.question_type
+        data["is_active"] = True if row.system_key in {"first_name", "email"} else data["is_active"]
+    for key, value in data.items(): setattr(row, key, value)
+    audit(db, "enquiry_question_updated", "enquiry_question", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit()
+    return enquiry_question_json(row)
+
+
+@app.delete("/api/studio/enquiry-form/questions/{question_id}")
+def delete_enquiry_question(question_id: str, request: Request,
+                            session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(EnquiryFormQuestion).where(
+        EnquiryFormQuestion.id == question_id,
+        EnquiryFormQuestion.tenant_id == membership.tenant_id))
+    if not row:
+        raise HTTPException(404, "Question not found")
+    if row.is_protected:
+        raise HTTPException(409, "This core question is protected and cannot be deleted")
+    audit(db, "enquiry_question_deleted", "enquiry_question", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"label": row.label})
+    db.delete(row); db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/studio/mailbox")
@@ -1036,11 +1151,24 @@ def public_enquiry_form(slug: str, db: Session = Depends(get_db)):
         ServicePackage.tenant_id == tenant.id, ServicePackage.is_active.is_(True)
     ).order_by(ServicePackage.sort_order, ServicePackage.created_at)).all()
     branding = tenant.branding or {}
+    questions = ensure_default_enquiry_questions(db, tenant, row)
+    question_data = []
+    for question in questions:
+        if not question.is_active:
+            continue
+        item = enquiry_question_json(question)
+        if question.system_key == "package_interest":
+            item["options"] = [package.name for package in packages]
+        if question.question_type == "venue":
+            item["venue_search"] = {"provider": "google_places", "configured": False,
+                                    "manual_entry_available": True}
+        question_data.append(item)
     result = enquiry_form_json(row, tenant)
     result.update({"display_name": branding.get("display_name") or tenant.display_name,
                    "accent_colour": branding.get("accent_colour") or "#a9782e",
                    "packages": [{"id": item.id, "name": item.name,
-                                  "price_pence": item.price_pence} for item in packages]})
+                                  "price_pence": item.price_pence} for item in packages],
+                   "questions": question_data})
     result.pop("public_url", None)
     return result
 
@@ -1054,8 +1182,30 @@ def submit_public_enquiry(slug: str, payload: PublicEnquiryIn, request: Request,
         raise HTTPException(404, "This enquiry form has not been published yet")
     if payload.website:
         return {"ok": True, "message": config.success_message}
-    row = Enquiry(tenant_id=tenant.id, **payload.model_dump(exclude={"website"}))
+    questions = ensure_default_enquiry_questions(db, tenant, config)
+    supplied = payload.model_dump()
+    built_in_values = {key: supplied.get(key) for key, *_ in DEFAULT_ENQUIRY_QUESTIONS}
+    for question in questions:
+        if not question.is_active:
+            continue
+        raw_value = built_in_values.get(question.system_key) if question.system_key else payload.answers.get(question.id, "")
+        value = str(raw_value or "").strip()
+        if question.is_required and not value:
+            raise HTTPException(422, f"Please answer: {question.label}")
+        if question.question_type in {"single_choice", "multiple_choice"} and question.options and value:
+            selected = [part.strip() for part in value.split("|") if part.strip()]
+            if any(part not in question.options for part in selected):
+                raise HTTPException(422, f"Choose one of the available answers for: {question.label}")
+    row = Enquiry(tenant_id=tenant.id, **payload.model_dump(exclude={"website", "answers"}))
     db.add(row); db.flush()
+    for question in questions:
+        if question.system_key or not question.is_active:
+            continue
+        answer = str(payload.answers.get(question.id, "")).strip()
+        if answer:
+            db.add(EnquiryAnswer(tenant_id=tenant.id, enquiry_id=row.id,
+                                 question_id=question.id, question_label=question.label,
+                                 answer=answer, sort_order=question.sort_order))
     audit(db, "enquiry_received", "enquiry", row.id, tenant_id=tenant.id,
           request=request, detail={"workflow_trigger_recorded": True,
                                    "automatic_sending_paused": tenant.automations_paused})

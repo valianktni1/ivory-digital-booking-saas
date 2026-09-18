@@ -261,6 +261,27 @@ class EnquiryFormConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class EnquiryFormQuestion(Base):
+    __tablename__ = "enquiry_form_questions"
+    __table_args__ = (
+        Index("ix_enquiry_form_questions_tenant_order", "tenant_id", "sort_order"),
+        UniqueConstraint("tenant_id", "system_key", name="uq_enquiry_question_system_key"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    system_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    label: Mapped[str] = mapped_column(String(180))
+    help_text: Mapped[str] = mapped_column(String(300), default="")
+    question_type: Mapped[str] = mapped_column(String(30), default="short_text")
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_protected: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    options: Mapped[list] = mapped_column(JSON, default=list)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class Enquiry(Base):
     __tablename__ = "enquiries"
     __table_args__ = (Index("ix_enquiries_tenant_created", "tenant_id", "created_at"),)
@@ -276,6 +297,18 @@ class Enquiry(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="new", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EnquiryAnswer(Base):
+    __tablename__ = "enquiry_answers"
+    __table_args__ = (Index("ix_enquiry_answers_enquiry_order", "enquiry_id", "sort_order"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    enquiry_id: Mapped[str] = mapped_column(ForeignKey("enquiries.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id: Mapped[str] = mapped_column(String(36))
+    question_label: Mapped[str] = mapped_column(String(180))
+    answer: Mapped[str] = mapped_column(Text, default="")
+    sort_order: Mapped[int] = mapped_column(default=0)
 
 
 class MailboxSetting(Base):

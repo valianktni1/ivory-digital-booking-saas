@@ -143,6 +143,32 @@ class PublicEnquiryIn(BaseModel):
     package_interest: str = Field(default="", max_length=160)
     message: str = Field(default="", max_length=4000)
     website: str = Field(default="", max_length=200)  # Honeypot; must remain empty.
+    answers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("answers")
+    @classmethod
+    def limit_answers(cls, values: dict[str, str]) -> dict[str, str]:
+        if len(values) > 80:
+            raise ValueError("Too many enquiry answers")
+        return {str(key)[:36]: str(value)[:4000] for key, value in values.items()}
+
+
+class EnquiryQuestionIn(BaseModel):
+    label: str = Field(min_length=2, max_length=180)
+    help_text: str = Field(default="", max_length=300)
+    question_type: Literal[
+        "short_text", "long_text", "email", "phone", "date",
+        "single_choice", "multiple_choice", "yes_no", "venue"
+    ] = "short_text"
+    is_required: bool = False
+    is_active: bool = True
+    options: list[str] = Field(default_factory=list, max_length=30)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+
+    @field_validator("options")
+    @classmethod
+    def clean_options(cls, values: list[str]) -> list[str]:
+        return [item.strip()[:160] for item in values if item.strip()]
 
 
 class MailboxSettingsIn(BaseModel):
