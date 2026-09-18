@@ -105,8 +105,9 @@ class WorkflowIn(BaseModel):
 class WorkflowStepIn(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     trigger_event: Literal[
-        "enquiry_received", "quote_sent", "quote_accepted", "booking_fee_paid",
-        "contract_signed", "questionnaire_submitted", "balance_due",
+        "enquiry_received", "quote_sent", "quote_accepted", "booking_form_received",
+        "booking_fee_due", "booking_fee_paid", "agreement_signed", "contract_signed",
+        "questionnaire_submitted", "balance_due",
         "balance_paid", "wedding_date", "wedding_completed"
     ]
     timing_direction: Literal["before", "after", "immediately"] = "after"
@@ -184,3 +185,140 @@ class MailboxSettingsIn(BaseModel):
     imap_security: Literal["ssl", "starttls", "none"] = "ssl"
     imap_username: str = Field(min_length=1, max_length=254)
     imap_password: str = Field(default="", max_length=1000)
+
+
+class EnquiryConvertIn(BaseModel):
+    title: str = Field(default="", max_length=200)
+
+
+class QuoteDraftIn(BaseModel):
+    package_ids: list[str] = Field(default_factory=list, max_length=20)
+    add_on_ids: list[str] = Field(default_factory=list, max_length=60)
+    custom_items: list[dict] = Field(default_factory=list, max_length=30)
+    message: str = Field(default="", max_length=4000)
+    expires_on: date | None = None
+
+    @field_validator("custom_items")
+    @classmethod
+    def validate_custom_items(cls, values: list[dict]) -> list[dict]:
+        cleaned = []
+        for item in values:
+            label = str(item.get("label", "")).strip()[:180]
+            if not label:
+                continue
+            price = int(item.get("price_pence", 0))
+            if price < 0 or price > 10_000_000:
+                raise ValueError("Custom item prices must be between £0 and £100,000")
+            cleaned.append({"label": label, "price_pence": price})
+        return cleaned
+
+
+class QuoteAcceptIn(BaseModel):
+    package_id: str
+    add_on_ids: list[str] = Field(default_factory=list, max_length=60)
+    client_name: str = Field(min_length=2, max_length=180)
+
+
+class QuoteAmendmentIn(BaseModel):
+    label: str = Field(min_length=2, max_length=180)
+    price_pence: int = Field(default=0, ge=0, le=10_000_000)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class PaymentRecordIn(BaseModel):
+    amount_pence: int = Field(gt=0, le=10_000_000)
+    paid_date: date = Field(default_factory=date.today)
+    payment_type: Literal["bank_transfer", "cash", "card", "other"] = "bank_transfer"
+    reference: str = Field(default="", max_length=160)
+    notes: str = Field(default="", max_length=1000)
+
+
+class InvoiceVoidIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class SpecialPaymentIn(BaseModel):
+    enabled: bool
+    note: str = Field(default="", max_length=1000)
+
+
+class ContractTemplateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    body: str = Field(min_length=20, max_length=100_000)
+    is_active: bool = True
+
+
+class ContractIssueIn(BaseModel):
+    template_id: str
+
+
+class ContractSignIn(BaseModel):
+    full_name: str = Field(min_length=2, max_length=180)
+    agreed: bool
+
+
+class QuestionnaireTemplateIn(BaseModel):
+    form_type: Literal["booking", "final_timings"]
+    name: str = Field(min_length=2, max_length=160)
+    introduction: str = Field(default="", max_length=4000)
+    questions: list[dict] = Field(default_factory=list, max_length=100)
+    is_active: bool = True
+
+    @field_validator("questions")
+    @classmethod
+    def validate_questions(cls, values: list[dict]) -> list[dict]:
+        cleaned = []
+        allowed = {"short_text", "long_text", "date", "time", "yes_no", "single_choice"}
+        for index, item in enumerate(values):
+            label = str(item.get("label", "")).strip()[:240]
+            if not label:
+                continue
+            kind = str(item.get("type", "short_text"))
+            if kind not in allowed:
+                raise ValueError("Unsupported questionnaire answer type")
+            cleaned.append({"id": str(item.get("id") or f"q{index + 1}")[:50],
+                            "label": label, "type": kind,
+                            "required": bool(item.get("required", False)),
+                            "options": [str(value).strip()[:160] for value in item.get("options", []) if str(value).strip()][:30]})
+        return cleaned
+
+
+class QuestionnaireSubmitIn(BaseModel):
+    answers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("answers")
+    @classmethod
+    def validate_answers(cls, values: dict[str, str]) -> dict[str, str]:
+        if len(values) > 100:
+            raise ValueError("Too many questionnaire answers")
+        return {str(key)[:50]: str(value)[:10_000] for key, value in values.items()}
+
+
+class DateBlockIn(BaseModel):
+    start_date: date
+    end_date: date
+    label: str = Field(default="Unavailable", min_length=2, max_length=160)
+    notes: str = Field(default="", max_length=2000)
+
+
+class WorkflowModeIn(BaseModel):
+    mode: Literal["automatic", "review", "task", "off"]
+    apply_to_existing: bool = False
+
+
+class WorkflowBookingControlIn(BaseModel):
+    step_id: str
+    paused: bool
+
+
+class BookingCompleteIn(BaseModel):
+    completed: bool = True
+
+
+class BookingCancelIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class CalendarSettingsIn(BaseModel):
+    calendar_id: str = Field(default="primary", min_length=1, max_length=500)
+    calendar_name: str = Field(default="Primary calendar", min_length=1, max_length=200)

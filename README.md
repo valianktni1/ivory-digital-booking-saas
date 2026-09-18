@@ -1,26 +1,53 @@
-# Ivory Digital Booking System
+# Ivory Digital Booking SaaS
 
-An independent, multi-tenant booking platform for wedding photographers and videographers.
+A secure, multi-tenant booking platform built for wedding photographers and videographers.
 
-Phase One establishes the safe foundation and three deliberately separate experiences:
+The product is split into three deliberately separate experiences:
 
 - **Manager** — `manager.ivorydigital.uk` for Ivory Digital platform administration.
-- **Studio** — `studio.ivorydigital.uk` for each photographer or videographer.
-- **Client** — `client.ivorydigital.uk/<business-name>` for branded couple portals.
+- **Studio** — `studio.ivorydigital.uk/<business-name>` for each photographer or videographer.
+- **Client** — `client.ivorydigital.uk/<business-name>` for enquiry forms and secure couple portals.
 
-This repository does not connect to or reuse the Weddings By Mark production database, uploads, credentials, email configuration or client records.
+The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Phase One features
+## Current release
 
-- Isolated photographer businesses with PostgreSQL row-level security.
-- Separate, opaque file-storage directory for every tenant.
-- Secure owner invitations that expire and work once.
-- Argon2 passwords, server-side sessions and CSRF protection.
-- Mandatory authenticator-app 2FA for the private Manager.
-- 30-day trials with automatic messages paused by default.
-- Audited support controls that expose health and counts, not couple details.
-- Professional responsive Manager, Studio and Client interfaces.
-- Guided Studio onboarding and editable business branding.
+Phase Four Journey RC1 provides the first complete proofing journey:
+
+- Tenant-isolated enquiry forms and custom questions.
+- Enquiry conversion into a wedding journey.
+- Package and optional-extra quote builder.
+- Client quote choices start unselected; mandatory extras remain locked.
+- Accepted quote snapshots, itemised invoices and tenant-specific sequential invoice numbers.
+- Audited quote amendments before full payment and a full-payment lock afterwards.
+- Manual bank, cash and card payment recording, booking-fee handling and pay-later arrangements.
+- Editable contract templates, couple signature, studio countersignature and PDF downloads.
+- Booking and final-timings questionnaires with downloadable PDFs.
+- Secure branded couple portal links.
+- Configurable workflows with Automatic, Review first, Task only and Disabled modes.
+- Per-couple workflow controls and a global automation safety pause.
+- Google Calendar OAuth foundation, deterministic one-way events and date blocking.
+- One-click wedding completion and clear cancellation controls.
+- Responsive Manager, Studio and Client interfaces.
+
+## Safety defaults
+
+- Every tenant starts with automatic messaging globally paused.
+- Starter workflow steps are supplied but disabled.
+- SMTP/IMAP connection tests do not activate messages.
+- A calendar failure never reverses a booking, payment or date block.
+- Calendar events do not invite couples or expose their email addresses.
+- PostgreSQL row-level security protects tenant-owned records.
+- Passwords and provider tokens are encrypted at rest.
+- Manager actions and important booking changes are audited.
+
+## External services
+
+Google Calendar connection requires an Ivory Digital Google OAuth web application with this redirect URI:
+
+`https://studio.ivorydigital.uk/api/integrations/google-calendar/callback`
+
+Card processing is not enabled in this release. Payments are deliberately recorded after they have been received by bank transfer, cash or another external method.
 
 ## Local development
 
@@ -28,8 +55,8 @@ This repository does not connect to or reuse the Weddings By Mark production dat
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest
+pytest -q
 uvicorn app.main:app --reload
 ```
 
-For the TrueNAS installation, follow `DEPLOY-PHASE-ONE-TRUENAS.md` exactly.
+For the release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FOUR-JOURNEY-RC1.md`.

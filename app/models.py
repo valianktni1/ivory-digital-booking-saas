@@ -329,3 +329,195 @@ class MailboxSetting(Base):
     smtp_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     imap_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class BookingJourney(Base):
+    __tablename__ = "booking_journeys"
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    enquiry_id: Mapped[str | None] = mapped_column(ForeignKey("enquiries.id", ondelete="SET NULL"), nullable=True, index=True)
+    portal_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    portal_token_encrypted: Mapped[str] = mapped_column(Text, default="")
+    quote_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    accepted_quote: Mapped[dict] = mapped_column(JSON, default=dict)
+    workflow_controls: Mapped[dict] = mapped_column(JSON, default=dict)
+    calendar_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    booking_fee_pence: Mapped[int] = mapped_column(default=10000)
+    balance_due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    special_payment_arrangement: Mapped[bool] = mapped_column(Boolean, default=False)
+    special_payment_note: Mapped[str] = mapped_column(Text, default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class TenantInvoiceCounter(Base):
+    __tablename__ = "tenant_invoice_counters"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    next_sequence: Mapped[int] = mapped_column(default=1)
+
+
+class BookingInvoice(Base):
+    __tablename__ = "booking_invoices"
+    __table_args__ = (UniqueConstraint("tenant_id", "number", name="uq_booking_invoice_tenant_number"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(index=True)
+    number: Mapped[str] = mapped_column(String(40), index=True)
+    issue_date: Mapped[date] = mapped_column(Date, default=date.today)
+    booking_fee_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    total_pence: Mapped[int] = mapped_column(default=0)
+    paid_pence: Mapped[int] = mapped_column(default=0)
+    status: Mapped[str] = mapped_column(String(30), default="unpaid", index=True)
+    line_items: Mapped[list] = mapped_column(JSON, default=list)
+    payment_schedule: Mapped[list] = mapped_column(JSON, default=list)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    void_reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class BookingQuoteRevision(Base):
+    __tablename__ = "booking_quote_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    previous_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class BookingPayment(Base):
+    __tablename__ = "booking_payments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    invoice_id: Mapped[str] = mapped_column(ForeignKey("booking_invoices.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount_pence: Mapped[int] = mapped_column()
+    paid_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
+    payment_type: Mapped[str] = mapped_column(String(40), default="bank_transfer")
+    reference: Mapped[str] = mapped_column(String(160), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class TenantContractTemplate(Base):
+    __tablename__ = "tenant_contract_templates"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160), default="Wedding photography agreement")
+    version: Mapped[int] = mapped_column(default=1)
+    body: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class BookingContract(Base):
+    __tablename__ = "booking_contracts"
+    __table_args__ = (UniqueConstraint("tenant_id", "booking_id", name="uq_booking_contract_tenant_booking"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    template_id: Mapped[str | None] = mapped_column(ForeignKey("tenant_contract_templates.id", ondelete="SET NULL"), nullable=True)
+    title: Mapped[str] = mapped_column(String(180))
+    version: Mapped[int] = mapped_column(default=1)
+    body_snapshot: Mapped[str] = mapped_column(Text)
+    client_name: Mapped[str] = mapped_column(String(180), default="")
+    client_signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    client_ip: Mapped[str] = mapped_column(String(64), default="")
+    supplier_name: Mapped[str] = mapped_column(String(180), default="")
+    supplier_signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class QuestionnaireTemplate(Base):
+    __tablename__ = "questionnaire_templates"
+    __table_args__ = (UniqueConstraint("tenant_id", "form_type", name="uq_questionnaire_tenant_type"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    form_type: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    introduction: Mapped[str] = mapped_column(Text, default="")
+    questions: Mapped[list] = mapped_column(JSON, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class QuestionnaireSubmission(Base):
+    __tablename__ = "questionnaire_submissions"
+    __table_args__ = (UniqueConstraint("tenant_id", "booking_id", "form_type", name="uq_submission_booking_type"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    form_type: Mapped[str] = mapped_column(String(40), index=True)
+    template_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class TenantCalendarConnection(Base):
+    __tablename__ = "tenant_calendar_connections"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    google_account_email: Mapped[str] = mapped_column(String(254), default="")
+    calendar_id: Mapped[str] = mapped_column(String(500), default="primary")
+    calendar_name: Mapped[str] = mapped_column(String(200), default="Primary calendar")
+    refresh_token_encrypted: Mapped[str] = mapped_column(Text, default="")
+    scope: Mapped[str] = mapped_column(Text, default="")
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+
+class TenantCalendarOAuthState(Base):
+    __tablename__ = "tenant_calendar_oauth_states"
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class TenantDateBlock(Base):
+    __tablename__ = "tenant_date_blocks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    start_date: Mapped[date] = mapped_column(Date, index=True)
+    end_date: Mapped[date] = mapped_column(Date, index=True)
+    label: Mapped[str] = mapped_column(String(160), default="Unavailable")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    calendar_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class WorkflowStepControl(Base):
+    __tablename__ = "workflow_step_controls"
+    step_id: Mapped[str] = mapped_column(ForeignKey("workflow_steps.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), default="off")
+    apply_to_existing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class WorkflowAction(Base):
+    __tablename__ = "workflow_actions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "booking_id", "step_id", "trigger_key", name="uq_workflow_action_once"),
+        UniqueConstraint("tenant_id", "enquiry_id", "step_id", "trigger_key", name="uq_enquiry_workflow_action_once"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str | None] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True, index=True)
+    enquiry_id: Mapped[str | None] = mapped_column(ForeignKey("enquiries.id", ondelete="CASCADE"), nullable=True, index=True)
+    step_id: Mapped[str] = mapped_column(ForeignKey("workflow_steps.id", ondelete="CASCADE"), nullable=False, index=True)
+    trigger_key: Mapped[str] = mapped_column(String(60), index=True)
+    mode: Mapped[str] = mapped_column(String(20))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="paused", index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

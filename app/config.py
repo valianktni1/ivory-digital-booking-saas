@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     invitation_hours: int = Field(default=72, ge=1, le=336)
     platform_storage_root: Path = Path("./platform-storage")
     tenant_storage_root: Path = Path("./tenant-data")
+    google_calendar_client_id: str = ""
+    google_calendar_client_secret: str = ""
+    google_calendar_redirect_uri: str = ""
+    google_calendar_timeout_seconds: int = Field(default=20, ge=5, le=60)
 
     @model_validator(mode="after")
     def validate_production_security(self):
@@ -54,4 +58,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

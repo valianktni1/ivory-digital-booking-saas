@@ -138,7 +138,9 @@ def test_manager_mfa_and_cross_tenant_isolation():
         )
         assert step.status_code == 201, step.text
         assert step.json()["is_paused"] is True
-        assert beta_client.get("/api/studio/workflows").json()[0]["steps"] == []
+        beta_steps = beta_client.get("/api/studio/workflows").json()[0]["steps"]
+        assert len(beta_steps) == 11
+        assert all(item["name"] != "Check they received the quote" for item in beta_steps)
         dashboard = alpha_client.get("/api/studio/dashboard").json()
         assert dashboard["tenant"]["automations_paused"] is True
         assert dashboard["onboarding"]["packages"] is True
@@ -189,6 +191,155 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert len(enquiries) == 1
         assert enquiries[0]["answers"] == [{"label": "How did you hear about us?", "answer": "Google"}]
         assert beta_client.get("/api/studio/enquiries").json() == []
+
+        converted = alpha_client.post(
+            f"/api/studio/enquiries/{enquiries[0]['id']}/convert",
+            headers=csrf(alpha_client), json={"title": "Taylor & Jordan"},
+        )
+        assert converted.status_code == 201, converted.text
+        booking_id = converted.json()["id"]
+        assert converted.json()["status"] == "quote_preparation"
+        assert beta_client.get(f"/api/studio/bookings/{booking_id}/journey").status_code == 404
+
+        mode = alpha_client.put(
+            f"/api/studio/workflow-steps/{step.json()['id']}/mode",
+            headers=csrf(alpha_client), json={"mode": "review", "apply_to_existing": False},
+        )
+        assert mode.status_code == 200, mode.text
+        quote = alpha_client.put(
+            f"/api/studio/bookings/{booking_id}/quote", headers=csrf(alpha_client), json={
+                "package_ids": [package.json()["id"]], "add_on_ids": [optional.json()["id"]],
+                "custom_items": [{"label": "Travel", "price_pence": 2500}],
+                "message": "Choose the collection that feels right.",
+            },
+        )
+        assert quote.status_code == 200, quote.text
+        sent_quote = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/quote/send", headers=csrf(alpha_client),
+        )
+        assert sent_quote.status_code == 200, sent_quote.text
+        assert sent_quote.json()["automatic_email_sent"] is False
+        portal_token = sent_quote.json()["portal_url"].rsplit("/", 1)[-1]
+        portal = manager.get(f"/api/public/portal/{portal_token}")
+        assert portal.status_code == 200, portal.text
+        assert portal.json()["quote"]["status"] == "sent"
+        accepted_quote = manager.post(f"/api/public/portal/{portal_token}/quote/accept", json={
+            "package_id": package.json()["id"], "add_on_ids": [optional.json()["id"]],
+            "client_name": "Taylor Client",
+        })
+        assert accepted_quote.status_code == 200, accepted_quote.text
+        invoice = accepted_quote.json()["invoice"]
+        assert invoice["number"] == "INV-00001"
+        assert invoice["total_pence"] == 149500 + 2500
+        assert manager.post(f"/api/public/portal/{portal_token}/quote/accept", json={
+            "package_id": package.json()["id"], "client_name": "Taylor Client",
+        }).status_code == 409
+
+        payment = alpha_client.post(
+            f"/api/studio/invoices/{invoice['id']}/payments", headers=csrf(alpha_client), json={
+                "amount_pence": 10000, "paid_date": "2026-09-18",
+                "payment_type": "bank_transfer", "reference": "TEST-DEP",
+            },
+        )
+        assert payment.status_code == 201, payment.text
+        assert payment.json()["status"] == "part_paid"
+        journey = alpha_client.get(f"/api/studio/bookings/{booking_id}/journey").json()
+        assert journey["status"] == "confirmed"
+        assert journey["calendar"]["status"] == "pending"
+
+        amendment = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/quote/amend", headers=csrf(alpha_client), json={
+                "label": "Complimentary wedding album", "price_pence": 0,
+                "reason": "Promotional album agreed with the couple",
+            },
+        )
+        assert amendment.status_code == 201, amendment.text
+        assert amendment.json()["quote_revisions"][0]["reason"].startswith("Promotional")
+        remaining = amendment.json()["invoices"][0]["outstanding_pence"]
+        paid_in_full = alpha_client.post(
+            f"/api/studio/invoices/{invoice['id']}/payments", headers=csrf(alpha_client), json={
+                "amount_pence": remaining, "paid_date": "2026-09-19",
+                "payment_type": "bank_transfer", "reference": "TEST-BAL",
+            },
+        )
+        assert paid_in_full.status_code == 201, paid_in_full.text
+        assert paid_in_full.json()["status"] == "paid"
+        invoice_pdf = alpha_client.get(f"/api/studio/invoices/{invoice['id']}/pdf")
+        assert invoice_pdf.status_code == 200
+        assert invoice_pdf.headers["content-type"] == "application/pdf"
+        assert invoice_pdf.content.startswith(b"%PDF")
+        locked_amendment = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/quote/amend", headers=csrf(alpha_client), json={
+                "label": "Must not be added", "price_pence": 0, "reason": "Testing the lock",
+            },
+        )
+        assert locked_amendment.status_code == 409
+
+        contract_template = alpha_client.post(
+            "/api/studio/contract-templates", headers=csrf(alpha_client), json={
+                "name": "Wedding photography agreement",
+                "body": "This agreement records the service, payment terms and responsibilities for the wedding.",
+                "is_active": True,
+            },
+        )
+        assert contract_template.status_code == 201, contract_template.text
+        issued = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/contract", headers=csrf(alpha_client),
+            json={"template_id": contract_template.json()["id"]},
+        )
+        assert issued.status_code == 200, issued.text
+        signed = manager.post(f"/api/public/portal/{portal_token}/contract/sign", json={
+            "full_name": "Taylor Client", "agreed": True,
+        })
+        assert signed.status_code == 200, signed.text
+        assert signed.json()["client_signed_at"]
+        countersigned = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/contract/countersign",
+            headers=csrf(alpha_client), json={"full_name": "Alex Alpha", "agreed": True},
+        )
+        assert countersigned.status_code == 200, countersigned.text
+        contract_pdf = manager.get(f"/api/public/portal/{portal_token}/contract/pdf")
+        assert contract_pdf.status_code == 200
+        assert contract_pdf.content.startswith(b"%PDF")
+
+        form_template = alpha_client.put(
+            "/api/studio/questionnaire-templates/booking", headers=csrf(alpha_client), json={
+                "form_type": "booking", "name": "Booking details",
+                "introduction": "Tell us the essentials.", "is_active": True,
+                "questions": [{"id": "ceremony_time", "label": "Ceremony time", "type": "time", "required": True}],
+            },
+        )
+        assert form_template.status_code == 200, form_template.text
+        submitted_form = manager.post(
+            f"/api/public/portal/{portal_token}/questionnaires/booking",
+            json={"answers": {"ceremony_time": "13:30"}},
+        )
+        assert submitted_form.status_code == 200, submitted_form.text
+        questionnaire_pdf = alpha_client.get(
+            f"/api/studio/bookings/{booking_id}/questionnaires/booking/pdf"
+        )
+        assert questionnaire_pdf.status_code == 200
+        assert questionnaire_pdf.content.startswith(b"%PDF")
+
+        blocked = alpha_client.post("/api/studio/date-blocks", headers=csrf(alpha_client), json={
+            "start_date": "2027-01-02", "end_date": "2027-01-04",
+            "label": "Family holiday", "notes": "Not taking bookings",
+        })
+        assert blocked.status_code == 201, blocked.text
+        assert blocked.json()["calendar"]["status"] == "pending"
+        assert manager.get(
+            "/api/public/business/alpha-weddings/availability/2027-01-03"
+        ).json()["available"] is False
+        assert manager.get(
+            "/api/public/business/alpha-weddings/availability/2027-01-10"
+        ).json()["available"] is True
+        assert beta_client.delete(
+            f"/api/studio/date-blocks/{blocked.json()['id']}", headers=csrf(beta_client),
+        ).status_code == 404
+        assert alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/complete", headers=csrf(alpha_client),
+            json={"completed": True},
+        ).json()["status"] == "completed"
 
         mailbox = alpha_client.put("/api/studio/mailbox", headers=csrf(alpha_client), json={
             "from_name": "Alpha Weddings", "email_address": "hello@alpha.example",
