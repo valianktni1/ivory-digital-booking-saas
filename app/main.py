@@ -1,4 +1,5 @@
 import base64
+import email
 import html
 import imaplib
 import ipaddress
@@ -7,30 +8,35 @@ import socket
 import smtplib
 import ssl
 import re
+import secrets
+import shutil
+from email.header import decode_header
+from email.utils import getaddresses, parsedate_to_datetime
 from urllib.parse import quote, urlencode
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 import qrcode
 import qrcode.image.svg
 import httpx
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .database import Base, SessionLocal, engine, get_db
-from .models import (AuditLog, Booking, BookingContract, BookingInvoice,
+from .models import (AuditLog, Booking, BookingContract, BookingDocument, BookingInvoice,
                      BookingJourney, BookingPayment, Client, Enquiry, EnquiryAnswer,
+                     BookingNote, EmailMessage, EmailTemplate,
                      EnquiryFormConfig, EnquiryFormQuestion, Invitation,
                      HelpArticle, MailboxSetting, Membership,
                      MembershipRole, PackageAddOn, QuestionnaireSubmission,
@@ -38,21 +44,24 @@ from .models import (AuditLog, Booking, BookingContract, BookingInvoice,
                      QuestionnaireTemplate, ServicePackage, Tenant,
                      TenantSubscription,
                      TenantCalendarConnection, TenantCalendarOAuthState,
-                     TenantContractTemplate,
+                     TenantContractTemplate, TenantEmailBranding,
                      TenantDateBlock, TenantInvoiceCounter, BookingQuoteRevision,
+                     StudioNotification, StudioTask,
                      TenantStatus, User, UserSession, Workflow, WorkflowRevision,
                      WorkflowAction, WorkflowStep, WorkflowStepControl)
 from .schemas import (AccountAccessIn, AutomationPauseIn, BillingSettingsIn,
-                      BookingCreateIn, BrandingPatchIn,
+                      BookingCreateIn, BookingRescheduleIn, BookingUpdateIn, BrandingPatchIn,
                       BookingCancelIn, BookingCompleteIn, CalendarSettingsIn, ClientCreateIn,
                       ContractIssueIn, ContractSignIn, ContractTemplateIn,
                       DateBlockIn, EnquiryConvertIn, EnquiryFormIn, EnquiryQuestionIn,
+                      EmailBrandingIn, EmailTemplateIn, EnquiryCloseIn,
                       HelpArticleIn, HelpAskIn,
                       InvitationAcceptIn, LoginIn, AddOnIn, MailboxSettingsIn,
-                      PackageIn, PaymentRecordIn, PlatformPaymentIn, PublicEnquiryIn,
+                      ManualEmailIn, NoteIn, PackageIn, PaymentRecordIn, PlatformPaymentIn, PublicEnquiryIn,
                       QuestionnaireSubmitIn, QuestionnaireTemplateIn,
                       QuoteAcceptIn, QuoteAmendmentIn, QuoteDraftIn, SpecialPaymentIn,
                       TenantCreateIn, TenantStatusIn, TotpConfirmIn, TrialExtensionIn,
+                      TaskIn, TaskUpdateIn, WorkflowActionReviewIn,
                       WorkflowBookingControlIn, WorkflowIn, WorkflowModeIn,
                       WorkflowStepIn, InvoiceVoidIn)
 from .security import (clear_login_failures, create_session, csrf_matches,
@@ -64,6 +73,7 @@ from .security import (clear_login_failures, create_session, csrf_matches,
 from .tenant_context import (install_postgres_rls, membership_for,
                              set_database_tenant)
 from .questionnaire_defaults import DEFAULT_QUESTIONNAIRES, default_questionnaire
+from .messaging import send_tenant_email
 
 
 settings = get_settings()
@@ -247,6 +257,38 @@ DEFAULT_HELP_ARTICLES = (
         "action_label": "Review workflow", "action_route": "workflow", "sort_order": 170,
     },
     {
+        "slug": "use-today-workspace", "title": "What should I deal with today?",
+        "category": "Daily workspace", "contexts": ["home", "enquiries", "weddings"], "tour_key": "home",
+        "keywords": ["today", "dashboard", "attention", "tasks", "what next", "daily work"],
+        "summary": "See new enquiries, approvals, replies, payments and tasks in one place.",
+        "body": "Open Home and scroll to Today. The counters and cards bring together new enquiries, workflow reviews, unread client updates, payments due, private tasks and upcoming weddings.\n\nChoose any card to open the relevant couple or working screen. The setup checklist remains separate, so day-to-day work does not get buried beneath settings.",
+        "action_label": "Open Today", "action_route": "home", "sort_order": 180,
+    },
+    {
+        "slug": "use-communications-centre", "title": "Where can I see replies and prepared emails?",
+        "category": "Communications", "contexts": ["communications", "weddings", "workflow"], "tour_key": "communications",
+        "keywords": ["email history", "inbox", "reply", "review queue", "sent emails", "communications"],
+        "summary": "Use Communications for inbox replies, review-first messages, templates and your signature.",
+        "body": "Open Communications. Inbox shows messages sent through Studio and replies refreshed from your connected mailbox. Review queue holds workflow emails that need your approval and private tasks that need completing.\n\nTemplates are shortcuts for personal messages and do not send automatically. Signature controls the professional sign-off, logo and award badge added to outgoing Studio email.",
+        "action_label": "Open communications", "action_route": "communications", "sort_order": 190,
+    },
+    {
+        "slug": "edit-move-and-organise-wedding", "title": "How do I edit or move a wedding?",
+        "category": "Weddings", "contexts": ["weddings", "calendar"], "tour_key": "weddings",
+        "keywords": ["edit couple", "change email", "move wedding", "new date", "reschedule", "change venue"],
+        "summary": "Edit ordinary details directly, or use Move date for a safe audited reschedule.",
+        "body": "Open Weddings and choose the couple. Edit details changes their names, contact information, venue or wedding information. Use Move date when the wedding itself is rescheduled.\n\nMove date checks bookings and unavailable periods first. You can move financial due dates by the same number of days, and Studio also updates future wedding-date reminders and the connected Google Calendar event.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 200,
+    },
+    {
+        "slug": "wedding-notes-tasks-and-files", "title": "Where do I keep notes, tasks and files?",
+        "category": "Weddings", "contexts": ["weddings", "home"], "tour_key": "weddings",
+        "keywords": ["private note", "task", "reminder", "upload file", "document", "wedding files"],
+        "summary": "Keep private working information inside the couple's wedding workspace.",
+        "body": "Open the wedding. Overview contains private notes and tasks, while Files keeps PDFs, images, Word files and spreadsheets beside the couple. Notes, tasks and files are Studio-only and never appear in the couple portal.\n\nThe Notes & activity tab also shows the permanent audit history, making it easier to understand what changed and when.",
+        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 210,
+    },
+    {
         "slug": "contact-ivory-digital", "title": "I still need help",
         "category": "Ivory Digital support", "contexts": ["home"],
         "keywords": ["support", "contact", "human", "help me", "problem", "not working", "stuck"],
@@ -368,7 +410,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.3-form-builders-and-links",
+    version="0.5.4-polished-private-beta",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -436,7 +478,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.19-phase-five-three-form-builders-links", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.19-phase-five-four-polished-private-beta", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -701,8 +743,9 @@ def create_tenant(payload: TenantCreateIn, request: Request,
         trial_started_at=started,
         trial_ends_at=started + timedelta(days=settings.trial_days),
         timezone=payload.timezone,
-        onboarding={"business": False, "branding": False, "packages": False,
-                    "templates": False, "calendar": False, "ready": False},
+        onboarding={"business": False, "branding": False, "enquiry_form": False,
+                    "packages": False, "templates": False, "mailbox": False,
+                    "calendar": False},
         branding={"display_name": payload.display_name.strip(), "accent_colour": "#a9782e",
                   "welcome_message": "Welcome to your private booking area."},
         automations_paused=True,
@@ -1562,7 +1605,6 @@ def create_workflow_step(workflow_id: str, payload: WorkflowStepIn, request: Req
     data = payload.model_dump()
     data["is_paused"] = True  # Configuration cannot accidentally start sending.
     row = WorkflowStep(tenant_id=tenant.id, workflow_id=workflow.id, **data)
-    workflow.is_active = True
     db.add(row); db.flush()
     db.add(WorkflowStepControl(step_id=row.id, tenant_id=tenant.id, mode="off"))
     mark_onboarding(tenant, "templates")
@@ -1918,6 +1960,50 @@ def invoice_json(row: BookingInvoice, db: Session) -> dict:
                           for item in payments]}
 
 
+def note_json(row: BookingNote) -> dict:
+    return {"id": row.id, "body": row.body, "created_at": row.created_at.isoformat()}
+
+
+def task_json(row: StudioTask) -> dict:
+    return {"id": row.id, "booking_id": row.booking_id, "title": row.title,
+            "notes": row.notes, "due_date": row.due_date.isoformat() if row.due_date else None,
+            "status": row.status,
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "created_at": row.created_at.isoformat()}
+
+
+def document_json(row: BookingDocument) -> dict:
+    return {"id": row.id, "booking_id": row.booking_id,
+            "name": row.original_name, "content_type": row.content_type,
+            "size_bytes": row.size_bytes, "description": row.description,
+            "created_at": row.created_at.isoformat(),
+            "download_url": f"/api/studio/documents/{row.id}"}
+
+
+def email_json(row: EmailMessage, include_body: bool = True) -> dict:
+    result = {"id": row.id, "booking_id": row.booking_id,
+              "direction": row.direction, "folder": row.folder,
+              "sender": row.sender, "recipient": row.recipient,
+              "subject": row.subject, "status": row.status, "error": row.error,
+              "is_read": row.is_read, "attachments": row.attachments or [],
+              "sent_at": row.sent_at.isoformat()}
+    if include_body:
+        result.update({"body_text": row.body_text, "body_html": row.body_html})
+    return result
+
+
+def create_studio_notification(db: Session, tenant: Tenant, booking: Booking | None,
+                               kind: str, title: str, body: str) -> StudioNotification:
+    branding = db.get(TenantEmailBranding, tenant.id)
+    row = StudioNotification(
+        tenant_id=tenant.id, booking_id=booking.id if booking else None,
+        kind=kind, title=title, body=body,
+        email_status="queued" if branding and branding.owner_notifications_enabled else "not_requested",
+    )
+    db.add(row)
+    return row
+
+
 def contract_json(row: BookingContract | None) -> dict | None:
     if not row:
         return None
@@ -1959,6 +2045,21 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
         BookingQuoteRevision.tenant_id == booking.tenant_id,
         BookingQuoteRevision.booking_id == booking.id
     ).order_by(BookingQuoteRevision.created_at)).all()
+    notes = db.scalars(select(BookingNote).where(
+        BookingNote.tenant_id == booking.tenant_id,
+        BookingNote.booking_id == booking.id).order_by(BookingNote.created_at.desc())).all()
+    tasks = db.scalars(select(StudioTask).where(
+        StudioTask.tenant_id == booking.tenant_id,
+        StudioTask.booking_id == booking.id).order_by(StudioTask.status, StudioTask.due_date)).all()
+    documents = db.scalars(select(BookingDocument).where(
+        BookingDocument.tenant_id == booking.tenant_id,
+        BookingDocument.booking_id == booking.id).order_by(BookingDocument.created_at.desc())).all()
+    emails = db.scalars(select(EmailMessage).where(
+        EmailMessage.tenant_id == booking.tenant_id,
+        EmailMessage.booking_id == booking.id).order_by(EmailMessage.sent_at.desc()).limit(100)).all()
+    activity = db.scalars(select(AuditLog).where(
+        AuditLog.tenant_id == booking.tenant_id,
+        AuditLog.subject_id == booking.id).order_by(AuditLog.created_at.desc()).limit(100)).all()
     result = {"id": booking.id, "title": booking.title,
               "event_date": booking.event_date.isoformat() if booking.event_date else None,
               "venue": booking.venue, "status": booking.status,
@@ -1982,6 +2083,13 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
               "questionnaires": [{"form_type": item.form_type,
                                     "submitted_at": item.submitted_at.isoformat()}
                                    for item in submissions],
+              "notes": [note_json(item) for item in notes],
+              "tasks": [task_json(item) for item in tasks],
+              "documents": [document_json(item) for item in documents],
+              "emails": [email_json(item) for item in emails],
+              "activity": [{"id": item.id, "action": item.action,
+                            "detail": item.detail or {},
+                            "created_at": item.created_at.isoformat()} for item in activity],
               "workflow_actions": [{"id": item.id, "step_id": item.step_id,
                                       "mode": item.mode, "due_at": item.due_at.isoformat(),
                                       "status": item.status, "payload": item.payload or {}}
@@ -2430,6 +2538,11 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
                                   9, 0, tzinfo=timezone.utc))
     audit(db, "quote_accepted", "booking", booking.id, tenant_id=tenant.id,
           request=request, detail={"invoice_number": number, "total_pence": total})
+    create_studio_notification(
+        db, tenant, booking, "quote_accepted",
+        f"{booking.title} accepted their quote",
+        f"Their package has been accepted and invoice {number} was created. Look out for the booking fee.",
+    )
     result = invoice_json(invoice, db)
     db.commit()
     return {"ok": True, "invoice": result,
@@ -2650,6 +2763,11 @@ def sign_public_contract(raw_token: str, payload: ContractSignIn, request: Reque
     trigger_workflow(db, tenant, booking, "agreement_signed")
     audit(db, "contract_client_signed", "contract", row.id, tenant_id=tenant.id,
           request=request, detail={"signatory": row.client_name})
+    create_studio_notification(
+        db, tenant, booking, "contract_signed",
+        f"{booking.title} signed their agreement",
+        "The couple's signature is safely recorded. The agreement is ready for your countersignature.",
+    )
     db.commit()
     return contract_json(row)
 
@@ -2765,6 +2883,12 @@ def submit_questionnaire(raw_token: str, form_type: str,
         trigger_workflow(db, tenant, booking, "booking_form_received")
     audit(db, "questionnaire_submitted", "booking", booking.id,
           tenant_id=tenant.id, request=request, detail={"form_type": form_type})
+    form_name = "booking questionnaire" if form_type == "booking" else "final wedding timings"
+    create_studio_notification(
+        db, tenant, booking, "form_submitted",
+        f"{booking.title} updated their {form_name}",
+        "Their latest answers are ready to review and download in the wedding workspace.",
+    )
     db.commit()
     return {"ok": True, "form_type": form_type, "submitted_at": row.submitted_at.isoformat()}
 
@@ -3145,6 +3269,137 @@ def approve_workflow_action(action_id: str, request: Request,
     return {"ok": True, "status": row.status}
 
 
+@app.put("/api/studio/workflow-actions/{action_id}/review")
+def update_workflow_action_review(action_id: str, payload: WorkflowActionReviewIn,
+                                  request: Request, session: UserSession = Depends(require_csrf),
+                                  db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(WorkflowAction).where(
+        WorkflowAction.id == action_id, WorkflowAction.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Workflow item not found")
+    if row.status not in {"review", "paused", "error"}:
+        raise HTTPException(409, "Only an unsent review item can be edited")
+    details = dict(row.payload or {})
+    details["subject"] = payload.subject; details["message_body"] = payload.message_body
+    details["review_edited_at"] = utcnow().isoformat(); row.payload = details
+    audit(db, "workflow_action_review_edited", "workflow_action", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True, "payload": row.payload}
+
+
+@app.post("/api/studio/workflow-actions/{action_id}/skip")
+def skip_workflow_action(action_id: str, request: Request,
+                         session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(WorkflowAction).where(
+        WorkflowAction.id == action_id, WorkflowAction.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Workflow item not found")
+    if row.status in {"sent", "completed", "cancelled", "skipped"}:
+        raise HTTPException(409, "This workflow item is already closed")
+    row.status = "skipped"; row.completed_at = utcnow()
+    audit(db, "workflow_action_skipped", "workflow_action", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True, "status": row.status}
+
+
+@app.post("/api/studio/workflow-actions/{action_id}/retry")
+def retry_workflow_action(action_id: str, request: Request,
+                          session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(WorkflowAction).where(
+        WorkflowAction.id == action_id, WorkflowAction.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Workflow item not found")
+    if row.status != "error": raise HTTPException(409, "Only a failed workflow item can be retried")
+    details = dict(row.payload or {}); details.pop("last_error", None); details["retried_at"] = utcnow().isoformat()
+    row.payload = details; row.status = "paused" if tenant.automations_paused else (
+        "review" if row.mode == "review" else "pending" if row.mode == "task" else "queued")
+    audit(db, "workflow_action_retried", "workflow_action", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True, "status": row.status}
+
+
+@app.post("/api/studio/workflows/{workflow_id}/duplicate", status_code=201)
+def duplicate_workflow(workflow_id: str, request: Request,
+                       session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    source = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant.id))
+    if not source: raise HTTPException(404, "Workflow not found")
+    copy = Workflow(tenant_id=tenant.id, name=f"{source.name} copy"[:160],
+                    description=source.description, is_active=False,
+                    sort_order=source.sort_order + 1)
+    db.add(copy); db.flush()
+    steps = db.scalars(select(WorkflowStep).where(
+        WorkflowStep.tenant_id == tenant.id, WorkflowStep.workflow_id == source.id
+    ).order_by(WorkflowStep.sort_order)).all()
+    for step in steps:
+        clone = WorkflowStep(tenant_id=tenant.id, workflow_id=copy.id, name=step.name,
+                             trigger_event=step.trigger_event, timing_direction=step.timing_direction,
+                             offset_value=step.offset_value, offset_unit=step.offset_unit,
+                             action_type=step.action_type, subject=step.subject,
+                             message_body=step.message_body, task_title=step.task_title,
+                             is_paused=True, sort_order=step.sort_order)
+        db.add(clone); db.flush()
+        db.add(WorkflowStepControl(step_id=clone.id, tenant_id=tenant.id, mode="off",
+                                   apply_to_existing=False))
+    audit(db, "workflow_duplicated", "workflow", copy.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"source_workflow_id": source.id})
+    db.commit(); return workflow_json(copy, db)
+
+
+@app.post("/api/studio/workflows/{workflow_id}/activate")
+def activate_workflow(workflow_id: str, request: Request,
+                      session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Workflow not found")
+    row.is_active = True
+    audit(db, "workflow_activated", "workflow", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"existing_couples_changed": False})
+    db.commit(); return workflow_json(row, db)
+
+
+@app.post("/api/studio/workflows/{workflow_id}/pause")
+def pause_workflow(workflow_id: str, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Workflow not found")
+    row.is_active = False
+    step_ids = list(db.scalars(select(WorkflowStep.id).where(
+        WorkflowStep.tenant_id == tenant.id, WorkflowStep.workflow_id == row.id)).all())
+    if step_ids:
+        actions = db.scalars(select(WorkflowAction).where(
+            WorkflowAction.tenant_id == tenant.id, WorkflowAction.step_id.in_(step_ids),
+            WorkflowAction.completed_at.is_(None))).all()
+        for action in actions:
+            details = dict(action.payload or {}); details["resume_status"] = action.status
+            action.payload = details; action.status = "paused"
+    audit(db, "workflow_paused", "workflow", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit(); return workflow_json(row, db)
+
+
+@app.delete("/api/studio/workflows/{workflow_id}")
+def delete_workflow(workflow_id: str, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Workflow not found")
+    if row.is_active: raise HTTPException(409, "Pause the workflow before deleting it")
+    step_ids = list(db.scalars(select(WorkflowStep.id).where(
+        WorkflowStep.tenant_id == tenant.id, WorkflowStep.workflow_id == row.id)).all())
+    used = None
+    if step_ids:
+        used = db.scalar(select(WorkflowAction.id).where(
+            WorkflowAction.tenant_id == tenant.id,
+            WorkflowAction.step_id.in_(step_ids)).limit(1))
+    if used:
+        raise HTTPException(409, "This workflow has client history. Keep it paused so that history remains available")
+    db.delete(row); audit(db, "workflow_deleted", "workflow", row.id, actor=session.user,
+                          tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True}
+
+
 @app.post("/api/studio/workflow-actions/{action_id}/complete")
 def complete_workflow_action(action_id: str, request: Request,
                              session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
@@ -3224,6 +3479,712 @@ def cancel_booking(booking_id: str, payload: BookingCancelIn, request: Request,
     result = journey_json(db, booking, journey)
     db.commit()
     return result
+
+
+@app.get("/api/studio/today")
+def studio_today(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    today = date.today(); soon = today + timedelta(days=30)
+    enquiries = db.scalars(select(Enquiry).where(
+        Enquiry.tenant_id == tenant.id, Enquiry.status == "new"
+    ).order_by(Enquiry.created_at)).all()
+    actions = db.scalars(select(WorkflowAction).where(
+        WorkflowAction.tenant_id == tenant.id,
+        WorkflowAction.status.in_(["review", "error", "pending"])
+    ).order_by(WorkflowAction.due_at).limit(50)).all()
+    tasks = db.scalars(select(StudioTask).where(
+        StudioTask.tenant_id == tenant.id, StudioTask.status == "open",
+        (StudioTask.due_date.is_(None)) | (StudioTask.due_date <= soon)
+    ).order_by(StudioTask.due_date).limit(50)).all()
+    invoices = db.scalars(select(BookingInvoice).where(
+        BookingInvoice.tenant_id == tenant.id,
+        BookingInvoice.status.in_(["unpaid", "part_paid"]),
+        BookingInvoice.due_date.is_not(None), BookingInvoice.due_date <= soon
+    ).order_by(BookingInvoice.due_date).limit(50)).all()
+    upcoming = db.scalars(select(Booking).where(
+        Booking.tenant_id == tenant.id, Booking.event_date.is_not(None),
+        Booking.event_date >= today, Booking.event_date <= today + timedelta(days=60),
+        Booking.status.notin_(["cancelled", "archived"])
+    ).order_by(Booking.event_date).limit(20)).all()
+    notifications = db.scalars(select(StudioNotification).where(
+        StudioNotification.tenant_id == tenant.id,
+        StudioNotification.is_read.is_(False)
+    ).order_by(StudioNotification.created_at.desc()).limit(30)).all()
+    booking_names = {row.id: row.title for row in db.scalars(select(Booking).where(
+        Booking.tenant_id == tenant.id)).all()}
+    invoice_booking = {row.id: booking_names.get(row.booking_id, "Wedding") for row in invoices}
+    return {
+        "counts": {"new_enquiries": len(enquiries),
+                   "review": sum(1 for row in actions if row.status == "review"),
+                   "failed": sum(1 for row in actions if row.status == "error"),
+                   "tasks": len(tasks), "payments": len(invoices),
+                   "updates": len(notifications)},
+        "enquiries": [{"id": row.id, "names": " & ".join(filter(None, [row.first_name, row.partner_name])),
+                       "event_date": row.event_date.isoformat() if row.event_date else None,
+                       "venue": row.venue, "created_at": row.created_at.isoformat()} for row in enquiries],
+        "actions": [{"id": row.id, "booking_id": row.booking_id,
+                     "booking_name": booking_names.get(row.booking_id, "Enquiry"),
+                     "status": row.status, "mode": row.mode,
+                     "due_at": row.due_at.isoformat(), "payload": row.payload or {}} for row in actions],
+        "tasks": [task_json(row) | {"booking_name": booking_names.get(row.booking_id, "General task")} for row in tasks],
+        "payments": [{"id": row.id, "booking_id": row.booking_id,
+                      "booking_name": invoice_booking[row.id], "number": row.number,
+                      "due_date": row.due_date.isoformat(),
+                      "outstanding_pence": max(0, row.total_pence - row.paid_pence),
+                      "overdue": row.due_date < today} for row in invoices],
+        "upcoming": [{"id": row.id, "title": row.title,
+                      "event_date": row.event_date.isoformat(), "venue": row.venue,
+                      "status": row.status} for row in upcoming],
+        "notifications": [{"id": row.id, "booking_id": row.booking_id,
+                           "kind": row.kind, "title": row.title, "body": row.body,
+                           "created_at": row.created_at.isoformat()} for row in notifications],
+    }
+
+
+@app.post("/api/studio/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: str, request: Request,
+                           session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(StudioNotification).where(
+        StudioNotification.id == notification_id, StudioNotification.tenant_id == tenant.id))
+    if not row:
+        raise HTTPException(404, "Update not found")
+    row.is_read = True
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/studio/search")
+def studio_search(q: str = "", context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    term = q.strip()
+    if len(term) < 2:
+        return {"results": []}
+    like = f"%{term}%"
+    searched_date = None
+    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            searched_date = datetime.strptime(term, pattern).date()
+            break
+        except ValueError:
+            continue
+    results: list[dict] = []
+    booking_filters = [
+        Booking.title.ilike(like), Booking.venue.ilike(like),
+        Client.email.ilike(like), Client.phone.ilike(like),
+    ]
+    if searched_date:
+        booking_filters.append(Booking.event_date == searched_date)
+    bookings = db.execute(select(Booking, Client).join(Client, Client.id == Booking.client_id).where(
+        Booking.tenant_id == tenant.id, or_(*booking_filters)
+    ).limit(12)).all()
+    for booking, client in bookings:
+        results.append({"type": "booking", "id": booking.id, "title": booking.title,
+                        "subtitle": " · ".join(filter(None, [booking.event_date.isoformat() if booking.event_date else "Date TBC", booking.venue, client.email]))})
+    enquiry_filters = [
+        Enquiry.first_name.ilike(like), Enquiry.partner_name.ilike(like),
+        Enquiry.email.ilike(like), Enquiry.venue.ilike(like),
+    ]
+    if searched_date:
+        enquiry_filters.append(Enquiry.event_date == searched_date)
+    enquiries = db.scalars(select(Enquiry).where(
+        Enquiry.tenant_id == tenant.id, or_(*enquiry_filters)
+    ).limit(8)).all()
+    for row in enquiries:
+        results.append({"type": "enquiry", "id": row.id,
+                        "title": " & ".join(filter(None, [row.first_name, row.partner_name])),
+                        "subtitle": " · ".join(filter(None, [row.event_date.isoformat() if row.event_date else "Date TBC", row.venue, row.email]))})
+    booking_names = {row.id: row.title for row in db.scalars(select(Booking).where(
+        Booking.tenant_id == tenant.id)).all()}
+    invoices = db.scalars(select(BookingInvoice).where(
+        BookingInvoice.tenant_id == tenant.id, BookingInvoice.number.ilike(like)).limit(8)).all()
+    for row in invoices:
+        results.append({"type": "booking", "id": row.booking_id,
+                        "title": row.number, "subtitle": booking_names.get(row.booking_id, "Invoice")})
+    return {"results": results[:24]}
+
+
+@app.patch("/api/studio/bookings/{booking_id}")
+def update_booking(booking_id: str, payload: BookingUpdateIn, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    booking = studio_booking(db, tenant.id, booking_id)
+    client = db.scalar(select(Client).where(Client.id == booking.client_id, Client.tenant_id == tenant.id))
+    old_date = booking.event_date
+    booking.title = payload.title.strip(); booking.event_date = payload.event_date; booking.venue = payload.venue.strip()
+    client.first_name = payload.first_name.strip(); client.last_name = payload.last_name.strip()
+    client.partner_name = payload.partner_name.strip() or None
+    client.email = normalise_email(str(payload.email)); client.phone = payload.phone.strip() or None
+    if old_date != booking.event_date:
+        journey = booking_journey(db, booking)
+        journey.calendar_state = {**(journey.calendar_state or {}), "status": "pending", "last_error": "Wedding details changed — sync required."}
+        sync_booking_calendar_safely(db, tenant, booking, journey)
+    audit(db, "booking_details_updated", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"old_date": old_date.isoformat() if old_date else None,
+                  "new_date": booking.event_date.isoformat() if booking.event_date else None})
+    result = journey_json(db, booking, booking_journey(db, booking))
+    db.commit()
+    return result
+
+
+@app.post("/api/studio/bookings/{booking_id}/reschedule")
+def reschedule_booking(booking_id: str, payload: BookingRescheduleIn, request: Request,
+                       session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
+    if not booking.event_date:
+        raise HTTPException(409, "Set the existing wedding date before using the move-date tool")
+    clash = db.scalar(select(Booking.id).where(
+        Booking.tenant_id == tenant.id, Booking.id != booking.id,
+        Booking.event_date == payload.event_date,
+        Booking.status.notin_(["cancelled", "archived"])).limit(1))
+    blocked = db.scalar(select(TenantDateBlock.id).where(
+        TenantDateBlock.tenant_id == tenant.id, TenantDateBlock.archived_at.is_(None),
+        TenantDateBlock.start_date <= payload.event_date,
+        TenantDateBlock.end_date >= payload.event_date).limit(1))
+    if clash or blocked:
+        raise HTTPException(409, "That date is already booked or blocked")
+    old_date = booking.event_date; delta = payload.event_date - old_date
+    booking.event_date = payload.event_date
+    if payload.move_financial_dates:
+        if journey.balance_due_date:
+            journey.balance_due_date += delta
+        invoices = db.scalars(select(BookingInvoice).where(
+            BookingInvoice.tenant_id == tenant.id, BookingInvoice.booking_id == booking.id)).all()
+        for invoice in invoices:
+            if invoice.due_date:
+                invoice.due_date += delta
+            if invoice.booking_fee_due_date:
+                invoice.booking_fee_due_date += delta
+    actions = db.scalars(select(WorkflowAction).where(
+        WorkflowAction.tenant_id == tenant.id, WorkflowAction.booking_id == booking.id,
+        WorkflowAction.trigger_key == "wedding_date", WorkflowAction.completed_at.is_(None))).all()
+    for action in actions:
+        action.due_at += timedelta(days=delta.days)
+    sync_booking_calendar_safely(db, tenant, booking, journey)
+    audit(db, "booking_rescheduled", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"old_date": old_date.isoformat(), "new_date": payload.event_date.isoformat(),
+                  "reason": payload.reason, "financial_dates_moved": payload.move_financial_dates})
+    result = journey_json(db, booking, journey)
+    db.commit()
+    return result
+
+
+@app.post("/api/studio/bookings/{booking_id}/archive")
+def archive_booking(booking_id: str, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
+    quote_state = dict(journey.quote_state or {})
+    quote_state["archived_from_status"] = booking.status
+    journey.quote_state = quote_state; booking.status = "archived"
+    audit(db, "booking_archived", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True}
+
+
+@app.post("/api/studio/bookings/{booking_id}/restore")
+def restore_booking(booking_id: str, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
+    if booking.status != "archived":
+        raise HTTPException(409, "This wedding is not archived")
+    booking.status = (journey.quote_state or {}).get("archived_from_status") or "confirmed"
+    audit(db, "booking_restored", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True, "status": booking.status}
+
+
+@app.post("/api/studio/enquiries/{enquiry_id}/close")
+def close_enquiry(enquiry_id: str, payload: EnquiryCloseIn, request: Request,
+                  session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id, Enquiry.tenant_id == tenant.id))
+    if not row:
+        raise HTTPException(404, "Enquiry not found")
+    if row.status == "converted":
+        raise HTTPException(409, "This enquiry is already a wedding journey")
+    row.status = "closed"
+    audit(db, "enquiry_closed", "enquiry", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"outcome": payload.outcome, "note": payload.note})
+    db.commit(); return {"ok": True, "status": row.status}
+
+
+@app.post("/api/studio/enquiries/{enquiry_id}/reopen")
+def reopen_enquiry(enquiry_id: str, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id, Enquiry.tenant_id == tenant.id))
+    if not row:
+        raise HTTPException(404, "Enquiry not found")
+    if row.status != "closed":
+        raise HTTPException(409, "Only a closed enquiry can be reopened")
+    row.status = "new"
+    audit(db, "enquiry_reopened", "enquiry", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True, "status": row.status}
+
+
+@app.post("/api/studio/bookings/{booking_id}/notes", status_code=201)
+def add_booking_note(booking_id: str, payload: NoteIn, request: Request,
+                     session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); booking = studio_booking(db, tenant.id, booking_id)
+    row = BookingNote(tenant_id=tenant.id, booking_id=booking.id, body=payload.body.strip(),
+                      created_by_user_id=session.user.id)
+    db.add(row); db.flush()
+    audit(db, "booking_note_added", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"note_id": row.id})
+    db.commit(); return note_json(row)
+
+
+@app.delete("/api/studio/bookings/{booking_id}/notes/{note_id}")
+def delete_booking_note(booking_id: str, note_id: str, request: Request,
+                        session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); studio_booking(db, tenant.id, booking_id)
+    row = db.scalar(select(BookingNote).where(BookingNote.id == note_id,
+                    BookingNote.booking_id == booking_id, BookingNote.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Note not found")
+    db.delete(row); audit(db, "booking_note_deleted", "booking", booking_id,
+                          actor=session.user, tenant_id=tenant.id, request=request,
+                          detail={"note_id": note_id})
+    db.commit(); return {"ok": True}
+
+
+@app.post("/api/studio/tasks", status_code=201)
+def create_task(payload: TaskIn, request: Request, booking_id: str | None = None,
+                session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    if booking_id: studio_booking(db, tenant.id, booking_id)
+    row = StudioTask(tenant_id=tenant.id, booking_id=booking_id,
+                     created_by_user_id=session.user.id, **payload.model_dump())
+    db.add(row); db.flush(); audit(db, "task_created", "booking" if booking_id else "task",
+                                  booking_id or row.id, actor=session.user,
+                                  tenant_id=tenant.id, request=request, detail={"task_id": row.id})
+    db.commit(); return task_json(row)
+
+
+@app.patch("/api/studio/tasks/{task_id}")
+def update_task(task_id: str, payload: TaskUpdateIn, request: Request,
+                session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(StudioTask).where(StudioTask.id == task_id, StudioTask.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Task not found")
+    values = payload.model_dump(exclude_unset=True)
+    for key, value in values.items(): setattr(row, key, value)
+    row.completed_at = utcnow() if row.status == "completed" else None
+    audit(db, "task_updated", "booking" if row.booking_id else "task", row.booking_id or row.id,
+          actor=session.user, tenant_id=tenant.id, request=request,
+          detail={"task_id": row.id, "status": row.status})
+    db.commit(); return task_json(row)
+
+
+@app.delete("/api/studio/tasks/{task_id}")
+def delete_task(task_id: str, request: Request, session: UserSession = Depends(require_csrf),
+                db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(StudioTask).where(StudioTask.id == task_id, StudioTask.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Task not found")
+    subject_id = row.booking_id or row.id; db.delete(row)
+    audit(db, "task_deleted", "booking" if row.booking_id else "task", subject_id,
+          actor=session.user, tenant_id=tenant.id, request=request, detail={"task_id": task_id})
+    db.commit(); return {"ok": True}
+
+
+def safe_upload_name(value: str) -> str:
+    name = Path(value or "file").name
+    return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:180] or "file"
+
+
+@app.post("/api/studio/bookings/{booking_id}/documents", status_code=201)
+async def upload_booking_document(booking_id: str, request: Request,
+                                  file: UploadFile = File(...), description: str = Form(""),
+                                  session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); booking = studio_booking(db, tenant.id, booking_id)
+    original = safe_upload_name(file.filename or "document")
+    allowed = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".txt", ".doc", ".docx", ".xls", ".xlsx"}
+    suffix = Path(original).suffix.lower()
+    if suffix not in allowed:
+        raise HTTPException(422, "Upload a PDF, image, text, Word or Excel document")
+    raw = await file.read(20 * 1024 * 1024 + 1)
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(413, "Documents must be 20 MB or smaller")
+    folder = settings.tenant_storage_root / tenant.storage_key / "documents" / booking.id
+    folder.mkdir(parents=True, exist_ok=True)
+    storage_name = f"{secrets.token_hex(20)}{suffix}"
+    target = folder / storage_name; target.write_bytes(raw)
+    row = BookingDocument(tenant_id=tenant.id, booking_id=booking.id,
+                          original_name=original, storage_name=storage_name,
+                          content_type=file.content_type or "application/octet-stream",
+                          size_bytes=len(raw), description=description.strip()[:500],
+                          uploaded_by_user_id=session.user.id)
+    db.add(row); db.flush(); audit(db, "document_uploaded", "booking", booking.id,
+                                  actor=session.user, tenant_id=tenant.id, request=request,
+                                  detail={"document_id": row.id, "name": original, "size_bytes": len(raw)})
+    db.commit(); return document_json(row)
+
+
+def booking_document_path(tenant: Tenant, row: BookingDocument) -> Path:
+    return settings.tenant_storage_root / tenant.storage_key / "documents" / row.booking_id / row.storage_name
+
+
+@app.get("/api/studio/documents/{document_id}")
+def download_booking_document(document_id: str, context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    row = db.scalar(select(BookingDocument).where(
+        BookingDocument.id == document_id, BookingDocument.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Document not found")
+    path = booking_document_path(tenant, row)
+    if not path.is_file(): raise HTTPException(404, "The stored document is missing")
+    return FileResponse(path, media_type=row.content_type, filename=row.original_name)
+
+
+@app.delete("/api/studio/documents/{document_id}")
+def delete_booking_document(document_id: str, request: Request,
+                            session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(BookingDocument).where(
+        BookingDocument.id == document_id, BookingDocument.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Document not found")
+    path = booking_document_path(tenant, row)
+    if path.is_file(): path.unlink()
+    booking_id = row.booking_id; name = row.original_name; db.delete(row)
+    audit(db, "document_deleted", "booking", booking_id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"name": name})
+    db.commit(); return {"ok": True}
+
+
+def email_template_json(row: EmailTemplate) -> dict:
+    return {"id": row.id, "name": row.name, "subject": row.subject,
+            "body": row.body, "category": row.category, "is_active": row.is_active,
+            "updated_at": row.updated_at.isoformat()}
+
+
+@app.get("/api/studio/email-templates")
+def list_email_templates(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    rows = db.scalars(select(EmailTemplate).where(
+        EmailTemplate.tenant_id == tenant.id).order_by(EmailTemplate.category, EmailTemplate.name)).all()
+    return [email_template_json(row) for row in rows]
+
+
+@app.post("/api/studio/email-templates", status_code=201)
+def create_email_template(payload: EmailTemplateIn, request: Request,
+                          session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = EmailTemplate(tenant_id=tenant.id, **payload.model_dump())
+    db.add(row); db.flush(); audit(db, "email_template_created", "email_template", row.id,
+                                  actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit(); return email_template_json(row)
+
+
+@app.put("/api/studio/email-templates/{template_id}")
+def update_email_template(template_id: str, payload: EmailTemplateIn, request: Request,
+                          session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(EmailTemplate).where(
+        EmailTemplate.id == template_id, EmailTemplate.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Email template not found")
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    audit(db, "email_template_updated", "email_template", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit(); return email_template_json(row)
+
+
+@app.delete("/api/studio/email-templates/{template_id}")
+def delete_email_template(template_id: str, request: Request,
+                          session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(EmailTemplate).where(
+        EmailTemplate.id == template_id, EmailTemplate.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Email template not found")
+    db.delete(row); audit(db, "email_template_deleted", "email_template", row.id,
+                          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit(); return {"ok": True}
+
+
+def email_branding_json(row: TenantEmailBranding, tenant: Tenant) -> dict:
+    return {"signoff": row.signoff, "signature_name": row.signature_name,
+            "signature_role": row.signature_role, "telephone": row.telephone,
+            "website": row.website, "show_logo": row.show_logo,
+            "show_badge": row.show_badge,
+            "owner_notifications_enabled": row.owner_notifications_enabled,
+            "has_logo": bool(row.logo_path and Path(row.logo_path).is_file()),
+            "has_badge": bool(row.badge_path and Path(row.badge_path).is_file()),
+            "logo_url": "/api/studio/email-branding/assets/logo",
+            "badge_url": "/api/studio/email-branding/assets/badge",
+            "business_name": tenant.display_name}
+
+
+def ensure_email_branding(db: Session, tenant: Tenant) -> TenantEmailBranding:
+    row = db.get(TenantEmailBranding, tenant.id)
+    if not row:
+        row = TenantEmailBranding(tenant_id=tenant.id, signature_name=tenant.display_name)
+        db.add(row); db.flush()
+    return row
+
+
+@app.get("/api/studio/email-branding")
+def get_email_branding(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    row = ensure_email_branding(db, tenant); result = email_branding_json(row, tenant)
+    db.commit(); return result
+
+
+@app.put("/api/studio/email-branding")
+def update_email_branding(payload: EmailBrandingIn, request: Request,
+                          session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); row = ensure_email_branding(db, tenant)
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    audit(db, "email_branding_updated", "tenant", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"owner_notifications_enabled": row.owner_notifications_enabled})
+    db.commit(); return email_branding_json(row, tenant)
+
+
+@app.post("/api/studio/email-branding/assets/{kind}")
+async def upload_email_branding_asset(kind: str, request: Request, file: UploadFile = File(...),
+                                      session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    if kind not in {"logo", "badge"}: raise HTTPException(404, "Email image type not found")
+    suffix = Path(safe_upload_name(file.filename or "image")).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(422, "Upload a PNG, JPG or WebP image")
+    raw = await file.read(3 * 1024 * 1024 + 1)
+    if len(raw) > 3 * 1024 * 1024: raise HTTPException(413, "Email images must be 3 MB or smaller")
+    folder = settings.tenant_storage_root / tenant.storage_key / "email-branding"
+    folder.mkdir(parents=True, exist_ok=True); target = folder / f"{kind}{suffix}"
+    for old in folder.glob(f"{kind}.*"):
+        if old != target and old.is_file(): old.unlink()
+    target.write_bytes(raw); row = ensure_email_branding(db, tenant)
+    setattr(row, f"{kind}_path", str(target))
+    audit(db, "email_branding_asset_uploaded", "tenant", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"kind": kind, "size_bytes": len(raw)})
+    db.commit(); return email_branding_json(row, tenant)
+
+
+@app.get("/api/studio/email-branding/assets/{kind}")
+def get_email_branding_asset(kind: str, context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context; row = db.get(TenantEmailBranding, tenant.id)
+    if not row or kind not in {"logo", "badge"}: raise HTTPException(404, "Email image not found")
+    path = Path(getattr(row, f"{kind}_path", ""))
+    if not path.is_file(): raise HTTPException(404, "Email image not found")
+    return FileResponse(path)
+
+
+@app.delete("/api/studio/email-branding/assets/{kind}")
+def delete_email_branding_asset(kind: str, request: Request,
+                                session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); row = ensure_email_branding(db, tenant)
+    if kind not in {"logo", "badge"}: raise HTTPException(404, "Email image type not found")
+    path = Path(getattr(row, f"{kind}_path", ""))
+    if path.is_file(): path.unlink()
+    setattr(row, f"{kind}_path", "")
+    audit(db, "email_branding_asset_deleted", "tenant", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"kind": kind})
+    db.commit(); return {"ok": True}
+
+
+@app.post("/api/studio/bookings/{booking_id}/emails/send", status_code=201)
+def send_manual_booking_email(booking_id: str, payload: ManualEmailIn, request: Request,
+                              session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); booking = studio_booking(db, tenant.id, booking_id)
+    client = db.scalar(select(Client).where(Client.id == booking.client_id, Client.tenant_id == tenant.id))
+    mailbox = db.get(MailboxSetting, tenant.id)
+    if not mailbox or not mailbox.smtp_verified_at or not mailbox.smtp_password_encrypted:
+        raise HTTPException(409, "Verify the Studio outgoing email connection first")
+    try:
+        row = send_tenant_email(db, tenant, mailbox, str(payload.recipient), payload.subject,
+                                payload.body, booking=booking, client=client,
+                                template_id=payload.template_id,
+                                extra={"client_portal_link": portal_url(booking_journey(db, booking))})
+    except Exception as exc:
+        audit(db, "manual_email_failed", "booking", booking.id, actor=session.user,
+              tenant_id=tenant.id, request=request, detail={"error": str(exc)[:500]})
+        db.commit(); raise HTTPException(422, "The email could not be sent. Check Email connection and try again") from exc
+    audit(db, "manual_email_sent", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"recipient": str(payload.recipient), "subject": row.subject, "email_message_id": row.id})
+    db.commit(); return email_json(row)
+
+
+@app.get("/api/studio/emails")
+def list_email_messages(booking_id: str | None = None, unread_only: bool = False,
+                        context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    stmt = select(EmailMessage).where(EmailMessage.tenant_id == tenant.id)
+    if booking_id: stmt = stmt.where(EmailMessage.booking_id == booking_id)
+    if unread_only: stmt = stmt.where(EmailMessage.is_read.is_(False))
+    rows = db.scalars(stmt.order_by(EmailMessage.sent_at.desc()).limit(250)).all()
+    return [email_json(row) for row in rows]
+
+
+@app.post("/api/studio/emails/{message_id}/read")
+def mark_email_read(message_id: str, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(EmailMessage).where(
+        EmailMessage.id == message_id, EmailMessage.tenant_id == tenant.id))
+    if not row: raise HTTPException(404, "Email not found")
+    row.is_read = True; db.commit(); return {"ok": True}
+
+
+def decode_mail_header(value: str | None) -> str:
+    parts = []
+    for raw, charset in decode_header(value or ""):
+        if isinstance(raw, bytes):
+            try: parts.append(raw.decode(charset or "utf-8", errors="replace"))
+            except LookupError: parts.append(raw.decode("utf-8", errors="replace"))
+        else: parts.append(raw)
+    return "".join(parts).strip()
+
+
+def extract_mail_bodies(message) -> tuple[str, str, list[tuple[str, bytes, str]]]:
+    text_body = ""; html_body = ""; attachments = []
+    for part in message.walk() if message.is_multipart() else [message]:
+        content_type = part.get_content_type(); disposition = str(part.get("Content-Disposition") or "")
+        filename = decode_mail_header(part.get_filename()) if part.get_filename() else ""
+        raw = part.get_payload(decode=True) or b""
+        if filename or "attachment" in disposition.lower():
+            if raw: attachments.append((safe_upload_name(filename or "attachment"), raw, content_type))
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        if content_type in {"text/plain", "text/html"}:
+            try: value = raw.decode(charset, errors="replace")
+            except LookupError: value = raw.decode("utf-8", errors="replace")
+            if content_type == "text/plain" and not text_body: text_body = value
+            if content_type == "text/html" and not html_body: html_body = value
+    if not text_body and html_body:
+        text_body = re.sub(r"<[^>]+>", " ", html_body)
+    return text_body[:100_000], html_body[:200_000], attachments
+
+
+def match_email_booking(db: Session, tenant_id: str, address: str) -> Booking | None:
+    client = db.scalar(select(Client).where(
+        Client.tenant_id == tenant_id, func.lower(Client.email) == normalise_email(address)))
+    if not client: return None
+    return db.scalar(select(Booking).where(
+        Booking.tenant_id == tenant_id, Booking.client_id == client.id
+    ).order_by(Booking.event_date.desc(), Booking.created_at.desc()).limit(1))
+
+
+@app.post("/api/studio/mailbox/sync")
+def sync_mailbox(request: Request, session: UserSession = Depends(require_csrf),
+                 db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db); mailbox = db.get(MailboxSetting, tenant.id)
+    if not mailbox or not mailbox.imap_verified_at or not mailbox.imap_password_encrypted:
+        raise HTTPException(409, "Verify the Studio incoming email connection first")
+    try:
+        if mailbox.imap_security == "ssl":
+            connection = imaplib.IMAP4_SSL(mailbox.imap_host, mailbox.imap_port, timeout=25)
+        else:
+            connection = imaplib.IMAP4(mailbox.imap_host, mailbox.imap_port, timeout=25)
+            if mailbox.imap_security == "starttls": connection.starttls(ssl_context=ssl.create_default_context())
+        connection.login(mailbox.imap_username, decrypt_secret(mailbox.imap_password_encrypted))
+        connection.select("INBOX", readonly=True)
+        status_value, data = connection.uid("search", None, "ALL")
+        if status_value != "OK": raise RuntimeError("Inbox search failed")
+        uids = (data[0] or b"").split()[-100:]
+        imported = 0; replies_paused = 0
+        for uid_raw in uids:
+            uid = uid_raw.decode()
+            if db.scalar(select(EmailMessage.id).where(
+                    EmailMessage.tenant_id == tenant.id, EmailMessage.folder == "inbox",
+                    EmailMessage.external_uid == uid)):
+                continue
+            fetch_status, payload = connection.uid("fetch", uid, "(RFC822 FLAGS)")
+            if fetch_status != "OK" or not payload or not isinstance(payload[0], tuple): continue
+            message = email.message_from_bytes(payload[0][1])
+            sender_header = decode_mail_header(message.get("From")); sender_pairs = getaddresses([sender_header])
+            sender_address = normalise_email(sender_pairs[0][1]) if sender_pairs and sender_pairs[0][1] else ""
+            booking = match_email_booking(db, tenant.id, sender_address) if sender_address else None
+            text_body, html_body, attachment_parts = extract_mail_bodies(message)
+            received = utcnow()
+            try:
+                parsed = parsedate_to_datetime(message.get("Date"))
+                if parsed: received = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except Exception: pass
+            row = EmailMessage(tenant_id=tenant.id, booking_id=booking.id if booking else None,
+                               direction="inbound", folder="inbox", external_uid=uid,
+                               message_id_header=str(message.get("Message-ID") or "")[:500],
+                               in_reply_to=str(message.get("In-Reply-To") or "")[:500],
+                               sender=sender_header[:500], recipient=decode_mail_header(message.get("To"))[:500],
+                               subject=decode_mail_header(message.get("Subject"))[:500],
+                               body_text=text_body, body_html=html_body, status="received",
+                               is_read=False, sent_at=received)
+            db.add(row); db.flush(); saved_attachments = []
+            if attachment_parts:
+                folder = settings.tenant_storage_root / tenant.storage_key / "mail" / row.id
+                folder.mkdir(parents=True, exist_ok=True)
+                for index, (name, raw, content_type) in enumerate(attachment_parts[:10]):
+                    if len(raw) > 15 * 1024 * 1024: continue
+                    stored = f"{index}-{secrets.token_hex(8)}-{name}"; (folder / stored).write_bytes(raw)
+                    saved_attachments.append({"name": name, "stored": stored,
+                                              "content_type": content_type, "size_bytes": len(raw)})
+                row.attachments = saved_attachments
+            if booking:
+                actions = db.scalars(select(WorkflowAction).where(
+                    WorkflowAction.tenant_id == tenant.id, WorkflowAction.booking_id == booking.id,
+                    WorkflowAction.trigger_key == "quote_sent",
+                    WorkflowAction.status.in_(["queued", "review", "pending"]))).all()
+                for action in actions:
+                    details = dict(action.payload or {}); details["reply_received_at"] = received.isoformat()
+                    details["resume_status"] = action.status; action.payload = details; action.status = "paused"
+                    replies_paused += 1
+                audit(db, "client_reply_received", "booking", booking.id, tenant_id=tenant.id,
+                      detail={"email_message_id": row.id, "quote_followups_paused": len(actions)})
+            imported += 1
+        connection.logout()
+    except Exception as exc:
+        audit(db, "imap_sync_failed", "mailbox", tenant.id, actor=session.user,
+              tenant_id=tenant.id, request=request, detail={"error": str(exc)[:500]})
+        db.commit(); raise HTTPException(422, "The inbox could not be refreshed. Check Email connection and try again") from exc
+    audit(db, "imap_sync_completed", "mailbox", tenant.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"imported": imported, "quote_followups_paused": replies_paused})
+    db.commit(); return {"ok": True, "imported": imported, "quote_followups_paused": replies_paused}
+
+
+@app.get("/api/studio/emails/{message_id}/attachments/{index}")
+def download_email_attachment(message_id: str, index: int, context=Depends(studio_context),
+                              db: Session = Depends(get_db)):
+    _, _, tenant = context
+    row = db.scalar(select(EmailMessage).where(
+        EmailMessage.id == message_id, EmailMessage.tenant_id == tenant.id))
+    if not row or index < 0 or index >= len(row.attachments or []):
+        raise HTTPException(404, "Attachment not found")
+    item = row.attachments[index]
+    path = settings.tenant_storage_root / tenant.storage_key / "mail" / row.id / item["stored"]
+    if not path.is_file(): raise HTTPException(404, "Attachment not found")
+    return FileResponse(path, media_type=item.get("content_type"), filename=item.get("name") or "attachment")
+
+
+@app.post("/api/studio/emails/{message_id}/reply", status_code=201)
+def reply_to_email(message_id: str, payload: ManualEmailIn, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    original = db.scalar(select(EmailMessage).where(
+        EmailMessage.id == message_id, EmailMessage.tenant_id == tenant.id))
+    if not original: raise HTTPException(404, "Email not found")
+    mailbox = db.get(MailboxSetting, tenant.id)
+    if not mailbox or not mailbox.smtp_verified_at: raise HTTPException(409, "Verify outgoing email first")
+    booking = studio_booking(db, tenant.id, original.booking_id) if original.booking_id else None
+    client = db.get(Client, booking.client_id) if booking else None
+    try:
+        row = send_tenant_email(db, tenant, mailbox, str(payload.recipient), payload.subject,
+                                payload.body, booking=booking, client=client,
+                                template_id=payload.template_id,
+                                in_reply_to=original.message_id_header)
+    except Exception as exc:
+        db.commit(); raise HTTPException(422, "The reply could not be sent") from exc
+    original.is_read = True
+    audit(db, "email_reply_sent", "booking" if booking else "email_message",
+          booking.id if booking else original.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"email_message_id": row.id})
+    db.commit(); return email_json(row)
 
 
 @app.get("/api/public/business/{slug}")
@@ -3336,6 +4297,11 @@ def submit_public_enquiry(slug: str, payload: PublicEnquiryIn, request: Request,
                                  question_id=question.id, question_label=question.label,
                                  answer=answer, sort_order=question.sort_order))
     trigger_enquiry_workflow(db, tenant, row)
+    create_studio_notification(
+        db, tenant, None, "new_enquiry",
+        f"New enquiry from {' & '.join(filter(None, [row.first_name, row.partner_name]))}",
+        "Their date, venue and answers are waiting in Enquiries.",
+    )
     audit(db, "enquiry_received", "enquiry", row.id, tenant_id=tenant.id,
           request=request, detail={"workflow_trigger_recorded": True,
                                    "automatic_sending_paused": tenant.automations_paused})

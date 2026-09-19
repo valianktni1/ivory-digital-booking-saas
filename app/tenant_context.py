@@ -53,6 +53,9 @@ def install_postgres_rls(db: Session) -> None:
                        "tenant_calendar_connections", "tenant_calendar_oauth_states",
                        "tenant_date_blocks",
                        "workflow_step_controls", "workflow_actions",
+                       "booking_notes", "studio_tasks", "booking_documents",
+                       "email_templates", "tenant_email_branding", "email_messages",
+                       "studio_notifications",
                        "tenant_subscriptions", "platform_billing_payments"):
         db.execute(text(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY"))
         db.execute(text(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY"))

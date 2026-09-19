@@ -10,9 +10,31 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release — Phase 5.3
+## Current release — Phase 5.4
 
-Phase 5.3 includes the complete booking journey, interactive support, enquiry-form sharing, subscription controls and photographer-designed editable couple forms:
+Phase 5.4 combines the planned 5.4 and 5.5 work into one complete photographer workspace and communications release. It includes everything from Phase 5.3 plus:
+
+- A final private-beta polish pass with clearer typography, stronger mobile navigation, accessible focus states and calmer everyday screens.
+- Setup that reaches a genuine 100%, then folds away so returning photographers land on the work that matters today.
+- A practical Today dashboard for new enquiries, approvals, replies, tasks, payments and upcoming weddings.
+- Fast global search across couples, UK-formatted dates, venues and invoice numbers.
+- A tabbed couple workspace for Overview, Client journey, Emails, Payments, Files and Notes & activity.
+- Safe wedding detail editing, audited date moves, clash checks, financial-date movement and calendar resync.
+- Private notes and tasks with due dates and one-tap completion.
+- Tenant-isolated wedding document uploads and downloads.
+- An organised Communications centre with Inbox, Review queue, Templates and Signature.
+- Manual personal email through each photographer's verified SMTP connection.
+- IMAP inbox refresh, matched couple replies, attachments and reply-aware quote-follow-up pauses.
+- Safe replies to unmatched incoming messages, ready to be linked to a wedding later.
+- Reusable email templates that never send by themselves.
+- Editable branded signatures with an embedded logo and award badge.
+- Optional owner email notifications for quote acceptance, signatures and submitted forms.
+- Review-first message editing, approval, retry and skip controls.
+- Multiple workflows with safe paused copies and deliberate future-events-only activation.
+- Enquiry close/reopen outcomes and wedding archive/restore controls.
+- Expanded page-aware help and tours for the complete working area.
+
+The full platform still includes:
 
 - Tenant-isolated enquiry forms and custom questions.
 - Enquiry conversion into a wedding journey.
@@ -75,4 +97,4 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-THREE-FORM-BUILDERS-LINKS.md`.
+For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-FOUR-COMPLETE-STUDIO-COMMUNICATIONS.md`.

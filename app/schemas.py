@@ -380,6 +380,89 @@ class BookingCancelIn(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
 
+class BookingUpdateIn(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(default="", max_length=100)
+    partner_name: str = Field(default="", max_length=160)
+    email: EmailStr
+    phone: str = Field(default="", max_length=50)
+    event_date: date | None = None
+    venue: str = Field(default="", max_length=240)
+
+
+class BookingRescheduleIn(BaseModel):
+    event_date: date
+    reason: str = Field(min_length=3, max_length=500)
+    move_financial_dates: bool = True
+
+
+class EnquiryCloseIn(BaseModel):
+    outcome: Literal["not_available", "chose_someone_else", "budget", "no_reply", "duplicate", "other"]
+    note: str = Field(default="", max_length=1000)
+
+
+class NoteIn(BaseModel):
+    body: str = Field(min_length=1, max_length=10000)
+
+
+class TaskIn(BaseModel):
+    title: str = Field(min_length=2, max_length=220)
+    notes: str = Field(default="", max_length=4000)
+    due_date: date | None = None
+
+
+class TaskUpdateIn(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=220)
+    notes: str | None = Field(default=None, max_length=4000)
+    due_date: date | None = None
+    status: Literal["open", "completed"] | None = None
+
+
+class EmailTemplateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    subject: str = Field(default="", max_length=220)
+    body: str = Field(min_length=1, max_length=30000)
+    category: str = Field(default="General", min_length=2, max_length=80)
+    is_active: bool = True
+
+
+class EmailBrandingIn(BaseModel):
+    signoff: str = Field(default="Kind regards", max_length=1000)
+    signature_name: str = Field(default="", max_length=160)
+    signature_role: str = Field(default="", max_length=160)
+    telephone: str = Field(default="", max_length=60)
+    website: str = Field(default="", max_length=500)
+    show_logo: bool = True
+    show_badge: bool = True
+    owner_notifications_enabled: bool = False
+
+    @field_validator("website")
+    @classmethod
+    def clean_website(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.lower().startswith("https://"):
+            raise ValueError("The website must begin with https://")
+        return value
+
+
+class ManualEmailIn(BaseModel):
+    recipient: EmailStr
+    subject: str = Field(min_length=1, max_length=220)
+    body: str = Field(min_length=1, max_length=30000)
+    template_id: str | None = None
+
+
+class WorkflowActionReviewIn(BaseModel):
+    subject: str = Field(default="", max_length=220)
+    message_body: str = Field(default="", max_length=30000)
+
+
+class WorkflowApplyIn(BaseModel):
+    apply_to_existing: bool = False
+    confirmation: str = Field(default="", max_length=100)
+
+
 class CalendarSettingsIn(BaseModel):
     calendar_id: str = Field(default="primary", min_length=1, max_length=500)
     calendar_name: str = Field(default="Primary calendar", min_length=1, max_length=200)

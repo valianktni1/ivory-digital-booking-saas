@@ -454,6 +454,100 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert beta_client.delete(
             f"/api/studio/date-blocks/{blocked.json()['id']}", headers=csrf(beta_client),
         ).status_code == 404
+
+        updated_booking = alpha_client.patch(
+            f"/api/studio/bookings/{booking_id}", headers=csrf(alpha_client), json={
+                "title": "Taylor & Jordan", "first_name": "Taylor", "last_name": "Client",
+                "partner_name": "Jordan", "email": "taylor@example.com",
+                "phone": "07000111222", "event_date": "2027-08-14", "venue": "New Test Hall",
+            },
+        )
+        assert updated_booking.status_code == 200, updated_booking.text
+        assert updated_booking.json()["venue"] == "New Test Hall"
+        moved = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/reschedule", headers=csrf(alpha_client), json={
+                "event_date": "2027-08-15", "reason": "The venue moved the available date",
+                "move_financial_dates": True,
+            },
+        )
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["event_date"] == "2027-08-15"
+        date_search = alpha_client.get("/api/studio/search?q=15%2F08%2F2027")
+        assert date_search.status_code == 200, date_search.text
+        assert any(row["id"] == booking_id for row in date_search.json()["results"])
+
+        note = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/notes", headers=csrf(alpha_client),
+            json={"body": "Remember the quiet room for family photographs."},
+        )
+        assert note.status_code == 201, note.text
+        assert beta_client.delete(
+            f"/api/studio/bookings/{booking_id}/notes/{note.json()['id']}",
+            headers=csrf(beta_client),
+        ).status_code == 404
+        task = alpha_client.post(
+            f"/api/studio/tasks?booking_id={booking_id}", headers=csrf(alpha_client), json={
+                "title": "Confirm the group photograph list", "notes": "Ask on Monday",
+                "due_date": "2027-08-09",
+            },
+        )
+        assert task.status_code == 201, task.text
+        completed_task = alpha_client.patch(
+            f"/api/studio/tasks/{task.json()['id']}", headers=csrf(alpha_client),
+            json={"status": "completed"},
+        )
+        assert completed_task.status_code == 200
+        assert completed_task.json()["completed_at"]
+        document = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/documents", headers=csrf(alpha_client),
+            data={"description": "Venue running order"},
+            files={"file": ("running-order.pdf", b"%PDF-test-document", "application/pdf")},
+        )
+        assert document.status_code == 201, document.text
+        assert alpha_client.get(document.json()["download_url"]).content == b"%PDF-test-document"
+        assert beta_client.get(document.json()["download_url"]).status_code == 404
+
+        today = alpha_client.get("/api/studio/today")
+        assert today.status_code == 200, today.text
+        assert set(today.json()["counts"]) == {
+            "new_enquiries", "review", "updates", "payments", "failed", "tasks"
+        }
+        search = alpha_client.get("/api/studio/search?q=Taylor")
+        assert search.status_code == 200
+        assert any(row["id"] == booking_id for row in search.json()["results"])
+        assert beta_client.get("/api/studio/search?q=Taylor").json()["results"] == []
+
+        copied_workflow = alpha_client.post(
+            f"/api/studio/workflows/{workflow['id']}/duplicate", headers=csrf(alpha_client),
+        )
+        assert copied_workflow.status_code == 201, copied_workflow.text
+        assert copied_workflow.json()["is_active"] is False
+        assert copied_workflow.json()["steps"]
+        assert all(row["mode"] == "off" for row in copied_workflow.json()["steps"])
+        paused_workflow = alpha_client.post(
+            "/api/studio/workflows", headers=csrf(alpha_client), json={
+                "name": "Small weddings", "description": "A separate safe draft",
+                "is_active": False, "sort_order": 4,
+            },
+        )
+        assert paused_workflow.status_code == 201, paused_workflow.text
+        paused_step = alpha_client.post(
+            f"/api/studio/workflows/{paused_workflow.json()['id']}/steps",
+            headers=csrf(alpha_client), json={
+                "name": "Personal check-in", "trigger_event": "enquiry_received",
+                "timing_direction": "after", "offset_value": 1, "offset_unit": "days",
+                "action_type": "manual_task", "task_title": "Call the couple",
+                "subject": "", "message_body": "", "is_paused": True, "sort_order": 0,
+            },
+        )
+        assert paused_step.status_code == 201, paused_step.text
+        paused_after_step = next(
+            row for row in alpha_client.get("/api/studio/workflows").json()
+            if row["id"] == paused_workflow.json()["id"]
+        )
+        assert paused_after_step["is_active"] is False
+        assert paused_after_step["steps"][0]["mode"] == "off"
+
         assert alpha_client.post(
             f"/api/studio/bookings/{booking_id}/complete", headers=csrf(alpha_client),
             json={"completed": True},
@@ -471,6 +565,39 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert "smtp-secret-password" not in mailbox.text
         assert "imap-secret-password" not in mailbox.text
         assert beta_client.get("/api/studio/mailbox").json()["configured"] is False
+
+        template = alpha_client.post("/api/studio/email-templates", headers=csrf(alpha_client), json={
+            "name": "Venue information", "subject": "A little venue information",
+            "body": "Hi {{couple_first_name}}, here are the details.",
+            "category": "Planning", "is_active": True,
+        })
+        assert template.status_code == 201, template.text
+        assert len(alpha_client.get("/api/studio/email-templates").json()) == 1
+        assert beta_client.get("/api/studio/email-templates").json() == []
+        branding = alpha_client.put("/api/studio/email-branding", headers=csrf(alpha_client), json={
+            "signoff": "All the best", "signature_name": "Alex Alpha",
+            "signature_role": "Wedding photographer", "telephone": "07000000001",
+            "website": "https://alpha.example", "show_logo": True, "show_badge": True,
+            "owner_notifications_enabled": True,
+        })
+        assert branding.status_code == 200, branding.text
+        assert branding.json()["owner_notifications_enabled"] is True
+        assert beta_client.get("/api/studio/email-branding").json()["signature_name"] == "Beta Films"
+
+        second_enquiry = manager.post("/api/public/business/alpha-weddings/enquiries", json={
+            "first_name": "Morgan", "email": "morgan@example.com", "event_date": "2028-02-12",
+            "venue": "Another Hall", "website": "", "answers": {custom_question_id: "Friend"},
+        })
+        assert second_enquiry.status_code == 201, second_enquiry.text
+        second_id = next(row["id"] for row in alpha_client.get("/api/studio/enquiries").json()
+                         if row["email"] == "morgan@example.com")
+        assert alpha_client.post(
+            f"/api/studio/enquiries/{second_id}/close", headers=csrf(alpha_client),
+            json={"outcome": "no_reply", "note": "Closed during test"},
+        ).json()["status"] == "closed"
+        assert alpha_client.post(
+            f"/api/studio/enquiries/{second_id}/reopen", headers=csrf(alpha_client),
+        ).json()["status"] == "new"
 
         public = manager.get("/api/public/business/alpha-weddings")
         assert public.status_code == 200

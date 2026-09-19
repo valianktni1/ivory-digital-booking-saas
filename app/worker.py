@@ -1,17 +1,16 @@
-import smtplib
-import ssl
 import time
 from datetime import date, datetime, timezone
-from email.message import EmailMessage
+from zoneinfo import ZoneInfo
 
 from redis import Redis
 from sqlalchemy import delete, select
 
 from .config import get_settings
 from .database import SessionLocal
-from .models import (AuditLog, Booking, Client, MailboxSetting, Tenant,
-                     TenantStatus, TenantSubscription, UserSession, WorkflowAction)
-from .security import decrypt_secret
+from .messaging import send_tenant_email
+from .models import (AuditLog, Booking, Client, MailboxSetting, StudioNotification,
+                     Tenant, TenantEmailBranding, TenantStatus,
+                     TenantSubscription, UserSession, WorkflowAction)
 from .tenant_context import set_database_tenant
 
 
@@ -19,20 +18,12 @@ def aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def merge_message(value: str, tenant: Tenant, booking: Booking | None,
-                  client: Client | None, payload: dict) -> str:
-    names = booking.title if booking else payload.get("recipient_name", "")
-    replacements = {
-        "business_name": tenant.display_name,
-        "couple_names": names,
-        "couple_first_name": client.first_name if client else payload.get("recipient_name", ""),
-        "wedding_date": booking.event_date.strftime("%A %d %B %Y") if booking and booking.event_date else "",
-        "venue": booking.venue if booking else "",
-    }
-    result = value
-    for key, replacement in replacements.items():
-        result = result.replace("{{" + key + "}}", str(replacement or ""))
-    return result
+def inside_delivery_window(tenant: Tenant) -> bool:
+    try:
+        local = datetime.now(timezone.utc).astimezone(ZoneInfo(tenant.timezone or "Europe/London"))
+    except Exception:
+        local = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/London"))
+    return 9 <= local.hour < 19
 
 
 def send_action(db, action: WorkflowAction, tenant: Tenant) -> None:
@@ -40,6 +31,8 @@ def send_action(db, action: WorkflowAction, tenant: Tenant) -> None:
         return
     payload = dict(action.payload or {})
     if payload.get("action_type") != "email":
+        return
+    if not inside_delivery_window(tenant):
         return
     mailbox = db.get(MailboxSetting, tenant.id)
     if not mailbox or not mailbox.smtp_verified_at or not mailbox.smtp_password_encrypted:
@@ -49,33 +42,50 @@ def send_action(db, action: WorkflowAction, tenant: Tenant) -> None:
     recipient = payload.get("recipient_email") or (client.email if client else "")
     if not recipient:
         raise RuntimeError("No couple email address is available")
-    message = EmailMessage()
-    message["From"] = f"{mailbox.from_name} <{mailbox.email_address}>"
-    message["To"] = recipient
-    message["Subject"] = merge_message(payload.get("subject", ""), tenant, booking, client, payload)
-    message.set_content(merge_message(payload.get("message_body", ""), tenant, booking, client, payload))
-    context = ssl.create_default_context()
-    if mailbox.smtp_security == "ssl":
-        connection = smtplib.SMTP_SSL(mailbox.smtp_host, mailbox.smtp_port, timeout=20, context=context)
-    else:
-        connection = smtplib.SMTP(mailbox.smtp_host, mailbox.smtp_port, timeout=20)
-    try:
-        connection.ehlo()
-        if mailbox.smtp_security == "starttls":
-            connection.starttls(context=context); connection.ehlo()
-        connection.login(mailbox.smtp_username, decrypt_secret(mailbox.smtp_password_encrypted))
-        connection.send_message(message)
-    finally:
-        try:
-            connection.quit()
-        except Exception:
-            connection.close()
+    message = send_tenant_email(
+        db, tenant, mailbox, recipient,
+        payload.get("subject", ""), payload.get("message_body", ""),
+        booking=booking, client=client, extra=payload,
+    )
     action.status = "sent"; action.completed_at = datetime.now(timezone.utc)
     payload["sent_at"] = action.completed_at.isoformat(); payload.pop("last_error", None)
     action.payload = payload
     db.add(AuditLog(tenant_id=tenant.id, action="workflow_email_sent",
                     subject_type="workflow_action", subject_id=action.id,
-                    detail={"recipient": recipient, "subject": message["Subject"]}))
+                    detail={"recipient": recipient, "subject": message.subject,
+                            "email_message_id": message.id}))
+
+
+def process_owner_notifications() -> None:
+    with SessionLocal() as scan:
+        set_database_tenant(scan, platform_admin=True)
+        candidates = list(scan.execute(select(StudioNotification.id, StudioNotification.tenant_id).where(
+            StudioNotification.email_status.in_(["queued", "waiting_for_mailbox"])
+        ).order_by(StudioNotification.created_at).limit(25)).all())
+    for notification_id, tenant_id in candidates:
+        with SessionLocal() as db:
+            set_database_tenant(db, tenant_id)
+            row = db.get(StudioNotification, notification_id)
+            tenant = db.get(Tenant, tenant_id)
+            branding = db.get(TenantEmailBranding, tenant_id)
+            mailbox = db.get(MailboxSetting, tenant_id)
+            if not row or not tenant or not branding or not branding.owner_notifications_enabled:
+                if row:
+                    row.email_status = "not_requested"
+                    db.commit()
+                continue
+            if not mailbox or not mailbox.smtp_verified_at:
+                row.email_status = "waiting_for_mailbox"
+                db.commit()
+                continue
+            try:
+                send_tenant_email(db, tenant, mailbox, tenant.owner_email,
+                                  row.title, row.body or row.title,
+                                  booking=db.get(Booking, row.booking_id) if row.booking_id else None)
+                row.email_status = "sent"
+            except Exception:
+                row.email_status = "failed"
+            db.commit()
 
 
 def process_workflow_actions() -> None:
@@ -186,6 +196,7 @@ def run() -> None:
                 db.commit()
             process_billing_statuses(now)
             process_workflow_actions()
+            process_owner_notifications()
         except Exception:
             # Docker restarts unhealthy dependencies; the worker retries without
             # changing or discarding tenant work.

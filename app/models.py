@@ -525,6 +525,124 @@ class WorkflowAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class BookingNote(Base):
+    __tablename__ = "booking_notes"
+    __table_args__ = (Index("ix_booking_notes_booking_created", "booking_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class StudioTask(Base):
+    __tablename__ = "studio_tasks"
+    __table_args__ = (
+        Index("ix_studio_tasks_tenant_due", "tenant_id", "due_date"),
+        Index("ix_studio_tasks_booking_status", "booking_id", "status"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str | None] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(220))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class BookingDocument(Base):
+    __tablename__ = "booking_documents"
+    __table_args__ = (Index("ix_booking_documents_booking_created", "booking_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    original_name: Mapped[str] = mapped_column(String(255))
+    storage_name: Mapped[str] = mapped_column(String(120), unique=True)
+    content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(default=0)
+    description: Mapped[str] = mapped_column(String(500), default="")
+    uploaded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EmailTemplate(Base):
+    __tablename__ = "email_templates"
+    __table_args__ = (Index("ix_email_templates_tenant_name", "tenant_id", "name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    subject: Mapped[str] = mapped_column(String(220), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(80), default="General")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class TenantEmailBranding(Base):
+    __tablename__ = "tenant_email_branding"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    signoff: Mapped[str] = mapped_column(Text, default="Kind regards")
+    signature_name: Mapped[str] = mapped_column(String(160), default="")
+    signature_role: Mapped[str] = mapped_column(String(160), default="")
+    telephone: Mapped[str] = mapped_column(String(60), default="")
+    website: Mapped[str] = mapped_column(String(500), default="")
+    logo_path: Mapped[str] = mapped_column(String(500), default="")
+    badge_path: Mapped[str] = mapped_column(String(500), default="")
+    show_logo: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_badge: Mapped[bool] = mapped_column(Boolean, default=True)
+    owner_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class EmailMessage(Base):
+    __tablename__ = "email_messages"
+    __table_args__ = (
+        Index("ix_email_messages_tenant_sent", "tenant_id", "sent_at"),
+        Index("ix_email_messages_booking_sent", "booking_id", "sent_at"),
+        UniqueConstraint("tenant_id", "folder", "external_uid", name="uq_email_message_external_uid"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str | None] = mapped_column(ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True, index=True)
+    template_id: Mapped[str | None] = mapped_column(ForeignKey("email_templates.id", ondelete="SET NULL"), nullable=True)
+    direction: Mapped[str] = mapped_column(String(20), default="outbound", index=True)
+    folder: Mapped[str] = mapped_column(String(80), default="sent")
+    external_uid: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    message_id_header: Mapped[str] = mapped_column(String(500), default="")
+    in_reply_to: Mapped[str] = mapped_column(String(500), default="")
+    sender: Mapped[str] = mapped_column(String(500), default="")
+    recipient: Mapped[str] = mapped_column(String(500), default="")
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    body_html: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="sent", index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    is_read: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    attachments: Mapped[list] = mapped_column(JSON, default=list)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class StudioNotification(Base):
+    __tablename__ = "studio_notifications"
+    __table_args__ = (Index("ix_studio_notifications_tenant_created", "tenant_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[str | None] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(60), index=True)
+    title: Mapped[str] = mapped_column(String(220))
+    body: Mapped[str] = mapped_column(String(1000), default="")
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    email_status: Mapped[str] = mapped_column(String(30), default="not_requested")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class HelpArticle(Base):
     __tablename__ = "help_articles"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
