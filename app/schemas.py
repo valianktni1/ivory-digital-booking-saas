@@ -99,6 +99,7 @@ class PackageIn(BaseModel):
     booking_fee_pence: int = Field(default=10000, ge=0, le=10_000_000)
     balance_due_days: int = Field(default=45, ge=0, le=730)
     inclusions: list[str] = Field(default_factory=list, max_length=40)
+    information_url: str = Field(default="", max_length=1000)
     is_featured: bool = False
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=10000)
@@ -108,10 +109,19 @@ class PackageIn(BaseModel):
     def clean_inclusions(cls, values: list[str]) -> list[str]:
         return [item.strip()[:240] for item in values if item.strip()]
 
+    @field_validator("information_url")
+    @classmethod
+    def clean_package_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.lower().startswith("https://"):
+            raise ValueError("The information link must begin with https://")
+        return value
+
 
 class AddOnIn(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     description: str = Field(default="", max_length=400)
+    information_url: str = Field(default="", max_length=1000)
     price_pence: int = Field(default=0, ge=0, le=10_000_000)
     selection_mode: Literal["optional", "mandatory"] = "optional"
     mandatory_reason: str = Field(default="", max_length=300)
@@ -122,6 +132,14 @@ class AddOnIn(BaseModel):
     @classmethod
     def clean_reason(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("information_url")
+    @classmethod
+    def clean_add_on_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.lower().startswith("https://"):
+            raise ValueError("The information link must begin with https://")
+        return value
 
 
 class WorkflowIn(BaseModel):
@@ -297,7 +315,8 @@ class QuestionnaireTemplateIn(BaseModel):
     @classmethod
     def validate_questions(cls, values: list[dict]) -> list[dict]:
         cleaned = []
-        allowed = {"short_text", "long_text", "date", "time", "yes_no", "single_choice"}
+        identifiers: set[str] = set()
+        allowed = {"short_text", "long_text", "email", "phone", "number", "date", "time", "yes_no", "single_choice", "multiple_choice"}
         for index, item in enumerate(values):
             label = str(item.get("label", "")).strip()[:240]
             if not label:
@@ -305,10 +324,23 @@ class QuestionnaireTemplateIn(BaseModel):
             kind = str(item.get("type", "short_text"))
             if kind not in allowed:
                 raise ValueError("Unsupported questionnaire answer type")
-            cleaned.append({"id": str(item.get("id") or f"q{index + 1}")[:50],
+            section = str(item.get("section") or "general").strip()[:50]
+            section_title = str(item.get("section_title") or "Your details").strip()[:160]
+            identifier = str(item.get("id") or f"q{index + 1}")[:50]
+            if identifier in identifiers:
+                raise ValueError("Every questionnaire question must have a unique identifier")
+            identifiers.add(identifier)
+            options = [str(value).strip()[:160] for value in item.get("options", []) if str(value).strip()][:30]
+            if kind in {"single_choice", "multiple_choice"} and len(options) < 2:
+                raise ValueError("Choice questions need at least two answer options")
+            cleaned.append({"id": identifier,
                             "label": label, "type": kind,
                             "required": bool(item.get("required", False)),
-                            "options": [str(value).strip()[:160] for value in item.get("options", []) if str(value).strip()][:30]})
+                            "help_text": str(item.get("help_text") or "").strip()[:500],
+                            "placeholder": str(item.get("placeholder") or "").strip()[:300],
+                            "section": section or "general",
+                            "section_title": section_title or "Your details",
+                            "options": options})
         return cleaned
 
 

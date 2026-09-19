@@ -27,3 +27,39 @@ select{font:inherit;color:inherit}.action-head{max-width:none;display:flex;align
 .paused-banner.live-banner{border-color:#cfe4d9;background:#f2faf6}.paused-banner.live-banner>span{background:#24715e}
 .share-panel{overflow:hidden;margin-bottom:20px}.share-panel>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px;border-bottom:1px solid var(--line)}.share-panel>header h2{margin:6px 0 5px;font-size:17px}.share-panel>header p{margin:0;color:var(--muted);font-size:9px}.share-status{padding:6px 9px;border-radius:999px;color:#765321;background:#fbf0dc;font-size:8px;font-weight:850;text-transform:uppercase}.share-status.live{color:#17604f;background:#e2f3ec}.share-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;padding:18px}.share-card{display:grid;align-content:start;gap:14px;padding:19px;border:1px solid #e0e4de;border-radius:15px;background:#fff}.share-card.featured{border-color:#d7be91;background:linear-gradient(145deg,#fffdf8,#fff)}.share-icon{width:38px;height:38px;display:grid;place-items:center;border-radius:11px;color:#fff;background:linear-gradient(145deg,#38524c,#1e2d29);font-size:16px;font-weight:850}.share-card.featured .share-icon{background:linear-gradient(145deg,#ba8b41,#79521d)}.share-card h3{margin:0;font:500 18px Georgia,serif}.share-card p{margin:5px 0 0;color:var(--muted);font-size:9px;line-height:1.55}.share-card label{display:grid;gap:7px;color:#3d4a46;font-size:9px;font-weight:800}.share-card input,.share-card textarea{width:100%;padding:11px;border:1px solid #d7dcd6;border-radius:9px;color:#55625e;background:#f8f9f7;font:500 9px ui-monospace,SFMono-Regular,Menlo,monospace;resize:none}.share-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.share-actions .button{min-height:38px;font-size:9px}.share-actions .disabled{pointer-events:none;opacity:.48}.share-panel>footer{display:flex;align-items:center;gap:11px;padding:14px 19px;border-top:1px solid var(--line);background:#f7faf7}.share-panel>footer>span{width:28px;height:28px;display:grid;place-items:center;flex:0 0 auto;border-radius:50%;color:#fff;background:#24715e;font-size:9px}.share-panel>footer p{margin:0;color:var(--muted);font-size:8px;line-height:1.5}.share-panel>footer strong{display:block;color:#344a43;font-size:9px}
 @media(max-width:900px){.share-grid{grid-template-columns:1fr}}@media(max-width:620px){.share-panel>header{flex-direction:column}.share-grid{padding:13px}.share-card{padding:16px}.share-actions{align-items:stretch;flex-direction:column}.share-actions .button{width:100%}}
+
+/* Phase 5.3 — complete booking and final-timings form builder */
+.documents-grid{grid-template-columns:minmax(310px,.68fr) minmax(0,1.32fr)}
+.form-builder-panel{overflow:hidden;padding:0}
+.form-builder-panel>header{padding:25px 27px 18px}
+.form-builder-panel>header p{margin:7px 0 0;color:var(--muted);font-size:10px;line-height:1.55}
+.questionnaire-tabs{display:flex;gap:5px;padding:5px;margin:0 27px 19px;border:1px solid #e1e5df;border-radius:12px;background:#f4f6f2}
+.questionnaire-tabs button{min-height:39px;flex:1;padding:8px 12px;border:0;border-radius:9px;color:#68736f;background:transparent;font-size:9px;font-weight:850}
+.questionnaire-tabs button.active{color:#fff;background:linear-gradient(135deg,#344f47,#1e302b);box-shadow:0 6px 14px rgba(24,42,35,.15)}
+.questionnaire-template-form{padding:0 27px 27px}
+.questionnaire-template-form .form-grid{margin-bottom:19px}
+.questionnaire-live{align-self:end;min-height:45px;padding:0 12px;border:1px solid #dfe4de;border-radius:10px;background:#f8faf7}
+.questionnaire-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:2px 0 14px;padding:14px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.questionnaire-toolbar>div:first-child strong,.questionnaire-toolbar>div:first-child small{display:block}
+.questionnaire-toolbar>div:first-child strong{font:500 16px Georgia,serif}
+.questionnaire-toolbar>div:first-child small{margin-top:4px;color:var(--muted);font-size:8px}
+.questionnaire-toolbar>div:last-child{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px}
+.questionnaire-toolbar .button{min-height:37px;padding:0 11px;font-size:8px}
+.questionnaire-sections{display:grid;gap:13px}
+.questionnaire-sections>section{overflow:hidden;border:1px solid #dfe4de;border-radius:14px;background:#fff}
+.questionnaire-sections>section>header{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:13px 16px;border-bottom:1px solid #e4e7e2;background:linear-gradient(145deg,#f9faf7,#f2f5f0)}
+.questionnaire-sections>section>header span{color:#31453f;font-size:10px;font-weight:900}
+.questionnaire-sections>section>header small{color:#7d8985;font-size:7px;font-weight:800;text-transform:uppercase}
+.questionnaire-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid #edf0ec}
+.questionnaire-row:last-child{border-bottom:0}
+.question-type-icon{width:29px;height:29px;display:grid;place-items:center;border-radius:9px;color:#fff;background:#b0833e;font:500 13px Georgia,serif}
+.questionnaire-row strong,.questionnaire-row small{display:block}
+.questionnaire-row strong{color:#31423d;font-size:9px;line-height:1.4}
+.questionnaire-row strong i{display:inline-flex;margin-left:5px;padding:3px 5px;border-radius:99px;color:#8a6226;background:#fff3dd;font-size:6px;font-style:normal;text-transform:uppercase}
+.questionnaire-row small{margin-top:3px;color:var(--muted);font-size:7px;line-height:1.45}
+.questionnaire-row-actions{display:flex;align-items:center;gap:4px}
+.questionnaire-row-actions button{min-width:29px;height:29px;padding:0 7px;border:1px solid #dfe4de;border-radius:8px;color:#40524d;background:#fff;font-size:7px;font-weight:850}
+.questionnaire-row-actions button:hover{border-color:#c7aa74;background:#fffaf1}
+.questionnaire-row-actions .remove{color:#9b4a4a}
+@media(max-width:1000px){.documents-grid{grid-template-columns:1fr}}
+@media(max-width:680px){.form-builder-panel>header{padding:21px 18px 15px}.questionnaire-tabs{margin:0 18px 16px}.questionnaire-tabs button{font-size:8px}.questionnaire-template-form{padding:0 18px 21px}.questionnaire-toolbar{align-items:flex-start;flex-direction:column}.questionnaire-toolbar>div:last-child{width:100%;justify-content:flex-start}.questionnaire-toolbar .button{flex:1}.questionnaire-row{grid-template-columns:auto 1fr}.questionnaire-row-actions{grid-column:2;flex-wrap:wrap}.questionnaire-row-actions button{flex:1}.questionnaire-live{align-self:stretch}}

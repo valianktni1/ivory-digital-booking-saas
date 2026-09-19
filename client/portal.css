@@ -16,3 +16,20 @@
 .portal-download{display:inline-grid;min-height:40px;place-items:center;margin-top:9px;padding:0 14px;border:1px solid var(--line);border-radius:9px;color:var(--accent);font-size:9px;font-weight:850;text-decoration:none}
 .availability-note{padding:12px 14px;border:1px solid #b9dfcc;border-radius:10px;color:#17604f;background:#f1faf5;font-size:9px;font-weight:750}.availability-note.unavailable{border-color:#e6caca;color:#943e3e;background:#fff6f6}
 @media(max-width:650px){.portal{padding:30px 20px;margin-block:28px}.portal-welcome{align-items:flex-start;flex-direction:column}.portal-welcome span{text-align:left}.portal-choices,.portal-extras,.portal-fields{grid-template-columns:1fr}.portal-card{padding:20px}.portal-card form>button{width:100%}}
+
+/* Phase 5.3 — richer choices and photographer-designed couple forms */
+.choice-info-link{display:inline-flex;align-items:center;margin-top:9px;padding:6px 9px;border:1px solid color-mix(in srgb,var(--accent) 28%,#ddd);border-radius:8px;color:var(--accent);background:color-mix(in srgb,var(--accent) 5%,#fff);font-size:8px;font-weight:850;text-decoration:none}
+.choice-info-link:hover{text-decoration:underline}
+.questionnaire-card{padding-bottom:30px}
+.form-received{margin:14px 0 18px;padding:11px 13px;border:1px solid #bfe0d1;border-radius:10px;color:#1f6957;background:#f1faf5;font-size:9px;font-weight:800;line-height:1.5}
+.portal-questionnaire{display:grid;gap:15px}
+.portal-form-section{min-width:0;margin:0;padding:0 18px 19px;border:1px solid #dfe4df;border-radius:14px;background:#fcfdfb}
+.portal-form-section legend{display:flex;align-items:center;gap:9px;padding:0 9px;color:#32443e;font:500 16px Georgia,serif}
+.portal-form-section legend span{width:25px;height:25px;display:grid;place-items:center;border-radius:50%;color:#fff;background:var(--accent);font:800 8px Arial,sans-serif}
+.portal-field.wide{grid-column:1/-1}
+.portal-field>span{line-height:1.45}
+.question-help{display:block;color:#7a8581;font-size:8px;font-weight:500;line-height:1.5}
+.portal-multiple{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.portal-multiple label{display:flex;align-items:flex-start;gap:7px;margin:0;padding:10px;border:1px solid #e0e4df;border-radius:9px;background:#fff;font-size:9px;font-weight:650}
+.portal-multiple input{width:auto;min-height:0;margin-top:1px}
+@media(max-width:650px){.portal-form-section{padding-inline:14px}.portal-multiple{grid-template-columns:1fr}}

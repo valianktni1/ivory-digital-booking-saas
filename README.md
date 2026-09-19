@@ -10,19 +10,21 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release — Phase 5.2
+## Current release — Phase 5.3
 
-Phase 5.2 includes the complete booking journey, interactive support, enquiry-form sharing and the Ivory Digital subscription-control foundation:
+Phase 5.3 includes the complete booking journey, interactive support, enquiry-form sharing, subscription controls and photographer-designed editable couple forms:
 
 - Tenant-isolated enquiry forms and custom questions.
 - Enquiry conversion into a wedding journey.
-- Package and optional-extra quote builder.
+- Package and optional-extra quote builder, including optional secure webpage links for more information.
 - Client quote choices start unselected; mandatory extras remain locked.
 - Accepted quote snapshots, itemised invoices and tenant-specific sequential invoice numbers.
 - Audited quote amendments before full payment and a full-payment lock afterwards.
 - Manual bank, cash and card payment recording, booking-fee handling and pay-later arrangements.
 - Editable contract templates, couple signature, studio countersignature and PDF downloads.
-- Booking and final-timings questionnaires with downloadable PDFs.
+- Complete, sectioned Booking Questionnaire and Final Wedding Timings starter forms based on a real wedding-photography workflow.
+- A visual form builder for adding, editing, moving and removing questions, selecting answer types, adding guidance and setting required answers.
+- Couple form updates with previously submitted answers safely pre-filled, plus downloadable PDFs and immutable submission snapshots.
 - Secure branded couple portal links.
 - Configurable workflows with Automatic, Review first, Task only and Disabled modes.
 - Per-couple workflow controls and a global automation safety pause.
@@ -73,4 +75,4 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-TWO-SUPERADMIN-BILLING.md`.
+For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-THREE-FORM-BUILDERS-LINKS.md`.

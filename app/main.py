@@ -23,7 +23,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -63,6 +63,7 @@ from .security import (clear_login_failures, create_session, csrf_matches,
                        totp_uri, utcnow, verify_password, verify_totp)
 from .tenant_context import (install_postgres_rls, membership_for,
                              set_database_tenant)
+from .questionnaire_defaults import DEFAULT_QUESTIONNAIRES, default_questionnaire
 
 
 settings = get_settings()
@@ -169,9 +170,17 @@ DEFAULT_HELP_ARTICLES = (
         "slug": "questionnaires-and-final-timings", "title": "How do booking and final-timings forms work?",
         "category": "Contracts & forms", "contexts": ["documents", "weddings"],
         "keywords": ["questionnaire", "booking form", "final timings", "questions", "completed form", "download pdf"],
-        "summary": "Create the questions once and collect answers in the secure couple portal.",
-        "body": "Open Contracts & forms and enter one question per line. Add an asterisk to make an answer required. Save the booking form and final-timings form separately.\n\nThe couple completes them inside their portal. Submitted answers appear in their wedding journey and can be downloaded as clearly named PDFs.",
+        "summary": "Start with complete wedding forms, then edit every section and question.",
+        "body": "Open Contracts & forms and choose either Booking Questionnaire or Final Wedding Timings. Both begin with a complete photographer-designed starter form. You can add, edit, remove and reorder questions, group them into clearly named sections, choose the answer type, add helpful guidance and decide whether an answer is required.\n\nSave each form separately when it is ready. The couple completes it inside their secure portal and can return to update it if plans change. Submitted answers appear in the wedding journey and can be downloaded as clearly named PDFs. Restoring the starter changes only your current draft — forms already submitted by couples keep their original snapshot.",
         "action_label": "Open contracts & forms", "action_route": "documents", "sort_order": 90,
+    },
+    {
+        "slug": "package-addon-information-links", "title": "Can I link packages or extras to more information?",
+        "category": "Packages & pricing", "contexts": ["packages", "weddings"], "tour_key": "packages",
+        "keywords": ["package link", "addon link", "add-on link", "website", "more information", "album details", "learn more"],
+        "summary": "Add an optional webpage link that couples can open before choosing.",
+        "body": "Open Packages & pricing, then add or edit a package or add-on. Paste the full secure webpage address into More information webpage — it must begin with https://.\n\nWhen that item is included in a quote, the couple sees a clear information link beside it. The page opens separately, so their quote and choices remain safely open. Leave the field blank when no extra page is needed.",
+        "action_label": "Open packages & pricing", "action_route": "packages", "sort_order": 95,
     },
     {
         "slug": "workflow-modes-explained", "title": "What do the four workflow modes mean?",
@@ -249,11 +258,21 @@ DEFAULT_HELP_ARTICLES = (
 
 
 def ensure_help_catalog(db: Session) -> None:
-    existing = set(db.scalars(select(HelpArticle.slug)).all())
+    existing_rows = {row.slug: row for row in db.scalars(select(HelpArticle)).all()}
     added = False
     for item in DEFAULT_HELP_ARTICLES:
-        if item["slug"] not in existing:
+        if item["slug"] not in existing_rows:
             db.add(HelpArticle(is_published=True, **item)); added = True
+    # Replace only our known, now-obsolete starter wording. A photographer's
+    # own edited help article is left untouched.
+    questionnaire_help = existing_rows.get("questionnaires-and-final-timings")
+    if questionnaire_help and "enter one question per line" in questionnaire_help.body.lower():
+        current = next(item for item in DEFAULT_HELP_ARTICLES if item["slug"] == questionnaire_help.slug)
+        questionnaire_help.title = current["title"]
+        questionnaire_help.summary = current["summary"]
+        questionnaire_help.body = current["body"]
+        questionnaire_help.keywords = current["keywords"]
+        added = True
     if added:
         db.commit()
 
@@ -283,6 +302,36 @@ def ensure_all_subscriptions(db: Session) -> None:
         db.commit()
 
 
+def ensure_compatibility_columns(db: Session) -> None:
+    """Add Phase 5.3 link fields to an existing Phase 5.2 database safely."""
+    if db.bind is None:
+        return
+    if db.bind.dialect.name == "postgresql":
+        db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+    elif db.bind.dialect.name == "sqlite":
+        for table_name in ("service_packages", "package_add_ons"):
+            columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
+            if "information_url" not in columns:
+                db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+    db.commit()
+
+
+def ensure_questionnaire_templates(db: Session, tenant: Tenant) -> None:
+    existing = {row.form_type for row in db.scalars(select(QuestionnaireTemplate).where(
+        QuestionnaireTemplate.tenant_id == tenant.id)).all()}
+    for form_type in ("booking", "final_timings"):
+        if form_type not in existing:
+            db.add(QuestionnaireTemplate(tenant_id=tenant.id, **default_questionnaire(form_type)))
+    db.flush()
+
+
+def ensure_all_questionnaire_templates(db: Session) -> None:
+    for tenant in db.scalars(select(Tenant)).all():
+        ensure_questionnaire_templates(db, tenant)
+    db.commit()
+
+
 def bootstrap_platform_admin(db: Session) -> None:
     email = normalise_email(str(settings.platform_admin_email))
     admin = db.scalar(select(User).where(User.email == email))
@@ -307,9 +356,11 @@ async def lifespan(_: FastAPI):
     settings.tenant_storage_root.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
+        ensure_compatibility_columns(db)
         bootstrap_platform_admin(db)
         ensure_help_catalog(db)
         ensure_all_subscriptions(db)
+        ensure_all_questionnaire_templates(db)
         install_postgres_rls(db)
         db.commit()
     yield
@@ -317,7 +368,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.2-superadmin-billing",
+    version="0.5.3-form-builders-and-links",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -385,7 +436,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.18-phase-five-two-superadmin-billing", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.19-phase-five-three-form-builders-links", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -663,6 +714,7 @@ def create_tenant(payload: TenantCreateIn, request: Request,
         billing_status="trial",
         trial_days_granted=settings.trial_days,
     ))
+    ensure_questionnaire_templates(db, tenant)
     db.add(Workflow(
         tenant_id=tenant.id,
         name="Main client journey",
@@ -1171,12 +1223,14 @@ def package_json(row: ServicePackage) -> dict:
     return {"id": row.id, "name": row.name, "short_description": row.short_description,
             "price_pence": row.price_pence, "booking_fee_pence": row.booking_fee_pence,
             "balance_due_days": row.balance_due_days, "inclusions": row.inclusions or [],
+            "information_url": row.information_url or "",
             "is_featured": row.is_featured, "is_active": row.is_active,
             "sort_order": row.sort_order}
 
 
 def add_on_json(row: PackageAddOn) -> dict:
     return {"id": row.id, "name": row.name, "description": row.description,
+            "information_url": row.information_url or "",
             "price_pence": row.price_pence, "selection_mode": row.selection_mode,
             "mandatory_reason": row.mandatory_reason, "is_active": row.is_active,
             "sort_order": row.sort_order}
@@ -2306,9 +2360,13 @@ def get_public_portal(raw_token: str, db: Session = Depends(get_db)):
     templates = db.scalars(select(QuestionnaireTemplate).where(
         QuestionnaireTemplate.tenant_id == tenant.id,
         QuestionnaireTemplate.is_active.is_(True)).order_by(QuestionnaireTemplate.form_type)).all()
-    submitted_types = {item["form_type"] for item in data["questionnaires"]}
+    submissions = db.scalars(select(QuestionnaireSubmission).where(
+        QuestionnaireSubmission.tenant_id == tenant.id,
+        QuestionnaireSubmission.booking_id == booking.id)).all()
+    submissions_by_type = {item.form_type: item for item in submissions}
     data["available_questionnaires"] = [
-        {**questionnaire_json(row), "submitted": row.form_type in submitted_types}
+        {**questionnaire_json(row, submissions_by_type.get(row.form_type)),
+         "submitted": row.form_type in submissions_by_type}
         for row in templates
     ]
     return data
@@ -2619,8 +2677,10 @@ def countersign_contract(booking_id: str, payload: ContractSignIn, request: Requ
 @app.get("/api/studio/questionnaire-templates")
 def list_questionnaire_templates(context=Depends(studio_context), db: Session = Depends(get_db)):
     _, _, tenant = context
+    ensure_questionnaire_templates(db, tenant)
     rows = db.scalars(select(QuestionnaireTemplate).where(
         QuestionnaireTemplate.tenant_id == tenant.id).order_by(QuestionnaireTemplate.form_type)).all()
+    db.commit()
     return [questionnaire_json(row) for row in rows]
 
 
@@ -2642,6 +2702,33 @@ def save_questionnaire_template(form_type: str, payload: QuestionnaireTemplateIn
     audit(db, "questionnaire_template_saved", "questionnaire_template", row.id,
           actor=session.user, tenant_id=tenant.id, request=request,
           detail={"form_type": form_type})
+    db.commit()
+    return questionnaire_json(row)
+
+
+@app.post("/api/studio/questionnaire-templates/{form_type}/starter")
+def restore_questionnaire_starter(form_type: str, request: Request,
+                                  session: UserSession = Depends(require_csrf),
+                                  db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    if form_type not in DEFAULT_QUESTIONNAIRES:
+        raise HTTPException(404, "Form type not found")
+    starter = default_questionnaire(form_type)
+    row = db.scalar(select(QuestionnaireTemplate).where(
+        QuestionnaireTemplate.tenant_id == tenant.id,
+        QuestionnaireTemplate.form_type == form_type))
+    if not row:
+        row = QuestionnaireTemplate(tenant_id=tenant.id, **starter)
+        db.add(row)
+    else:
+        row.name = starter["name"]
+        row.introduction = starter["introduction"]
+        row.questions = starter["questions"]
+        row.is_active = True
+    db.flush()
+    audit(db, "questionnaire_starter_restored", "questionnaire_template", row.id,
+          actor=session.user, tenant_id=membership.tenant_id, request=request,
+          detail={"form_type": form_type, "questions": len(row.questions or [])})
     db.commit()
     return questionnaire_json(row)
 

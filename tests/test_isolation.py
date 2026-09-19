@@ -4,8 +4,10 @@ from datetime import datetime, timezone
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 
-from app.main import app, ensure_public_mail_host
+from app.main import app, ensure_compatibility_columns, ensure_public_mail_host
 from app.worker import process_billing_statuses
 
 
@@ -34,6 +36,19 @@ def accept(tenant: dict, full_name: str) -> TestClient:
     })
     assert response.status_code == 200, response.text
     return client
+
+
+def test_phase_five_three_additive_column_upgrade():
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE service_packages (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE package_add_ons (id VARCHAR(36) PRIMARY KEY)"))
+    with Session(engine) as session:
+        ensure_compatibility_columns(session)
+        package_columns = {row[1] for row in session.execute(text("PRAGMA table_info(service_packages)"))}
+        add_on_columns = {row[1] for row in session.execute(text("PRAGMA table_info(package_add_ons)"))}
+    assert "information_url" in package_columns
+    assert "information_url" in add_on_columns
 
 
 def test_manager_mfa_and_cross_tenant_isolation():
@@ -170,11 +185,13 @@ def test_manager_mfa_and_cross_tenant_isolation():
 
         package = alpha_client.post("/api/studio/packages", headers=csrf(alpha_client), json={
             "name": "Story Collection", "short_description": "A full wedding story",
+            "information_url": "https://alpha.example/story-collection",
             "price_pence": 149500, "booking_fee_pence": 10000,
             "balance_due_days": 45, "inclusions": ["Photography", "Online gallery"],
             "is_featured": True, "is_active": True, "sort_order": 0,
         })
         assert package.status_code == 201, package.text
+        assert package.json()["information_url"] == "https://alpha.example/story-collection"
         assert len(alpha_client.get("/api/studio/packages").json()) == 1
         assert beta_client.get("/api/studio/packages").json() == []
         cross_package = beta_client.patch(
@@ -194,9 +211,21 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert mandatory_without_reason.status_code == 422
         optional = alpha_client.post("/api/studio/add-ons", headers=csrf(alpha_client), json={
             "name": "Complimentary album", "price_pence": 0, "selection_mode": "optional",
+            "information_url": "https://alpha.example/wedding-albums",
         })
         assert optional.status_code == 201
+        assert optional.json()["information_url"] == "https://alpha.example/wedding-albums"
         assert beta_client.get("/api/studio/add-ons").json() == []
+
+        forms = alpha_client.get("/api/studio/questionnaire-templates")
+        assert forms.status_code == 200, forms.text
+        forms_by_type = {row["form_type"]: row for row in forms.json()}
+        assert set(forms_by_type) == {"booking", "final_timings"}
+        assert len(forms_by_type["booking"]["questions"]) >= 20
+        assert len(forms_by_type["final_timings"]["questions"]) >= 25
+        assert {row["section_title"] for row in forms_by_type["final_timings"]["questions"]} >= {
+            "Ceremony and reception", "Preparations and travel", "Your running order",
+        }
 
         workflow = alpha_client.get("/api/studio/workflows").json()[0]
         step = alpha_client.post(
@@ -300,6 +329,8 @@ def test_manager_mfa_and_cross_tenant_isolation():
         portal = manager.get(f"/api/public/portal/{portal_token}")
         assert portal.status_code == 200, portal.text
         assert portal.json()["quote"]["status"] == "sent"
+        assert portal.json()["quote"]["packages"][0]["information_url"] == "https://alpha.example/story-collection"
+        assert portal.json()["quote"]["add_ons"][0]["information_url"] == "https://alpha.example/wedding-albums"
         accepted_quote = manager.post(f"/api/public/portal/{portal_token}/quote/accept", json={
             "package_id": package.json()["id"], "add_on_ids": [optional.json()["id"]],
             "client_name": "Taylor Client",
@@ -397,6 +428,16 @@ def test_manager_mfa_and_cross_tenant_isolation():
         )
         assert questionnaire_pdf.status_code == 200
         assert questionnaire_pdf.content.startswith(b"%PDF")
+        restored_form = alpha_client.post(
+            "/api/studio/questionnaire-templates/booking/starter", headers=csrf(alpha_client),
+        )
+        assert restored_form.status_code == 200, restored_form.text
+        assert len(restored_form.json()["questions"]) >= 20
+        restored_portal = manager.get(f"/api/public/portal/{portal_token}").json()
+        booking_form = next(row for row in restored_portal["available_questionnaires"]
+                            if row["form_type"] == "booking")
+        assert booking_form["submitted"] is True
+        assert booking_form["submission"]["answers"]["ceremony_time"] == "13:30"
 
         blocked = alpha_client.post("/api/studio/date-blocks", headers=csrf(alpha_client), json={
             "start_date": "2027-01-02", "end_date": "2027-01-04",
