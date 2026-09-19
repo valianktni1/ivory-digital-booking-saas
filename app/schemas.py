@@ -32,6 +32,35 @@ class AutomationPauseIn(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class TrialExtensionIn(BaseModel):
+    days: Literal[30, 60, 90, 120]
+    note: str = Field(min_length=3, max_length=500)
+
+
+class BillingSettingsIn(BaseModel):
+    plan_name: str = Field(min_length=2, max_length=120)
+    price_pence: int = Field(default=0, ge=0, le=10_000_000)
+    billing_cycle: Literal["monthly", "annual", "custom"] = "monthly"
+    next_payment_due: date | None = None
+    grace_days: int = Field(default=7, ge=0, le=60)
+    auto_suspend: bool = True
+
+
+class PlatformPaymentIn(BaseModel):
+    amount_pence: int = Field(gt=0, le=10_000_000)
+    paid_date: date = Field(default_factory=date.today)
+    payment_method: Literal["bank_transfer", "card", "stripe", "cash", "other"] = "bank_transfer"
+    reference: str = Field(default="", max_length=180)
+    notes: str = Field(default="", max_length=1000)
+    covers_until: date | None = None
+    reactivate: bool = True
+
+
+class AccountAccessIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+    next_payment_due: date | None = None
+
+
 class InvitationAcceptIn(BaseModel):
     full_name: str = Field(min_length=2, max_length=160)
     password: str = Field(min_length=14, max_length=500)

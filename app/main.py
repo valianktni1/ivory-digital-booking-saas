@@ -34,22 +34,25 @@ from .models import (AuditLog, Booking, BookingContract, BookingInvoice,
                      EnquiryFormConfig, EnquiryFormQuestion, Invitation,
                      HelpArticle, MailboxSetting, Membership,
                      MembershipRole, PackageAddOn, QuestionnaireSubmission,
+                     PlatformBillingPayment,
                      QuestionnaireTemplate, ServicePackage, Tenant,
+                     TenantSubscription,
                      TenantCalendarConnection, TenantCalendarOAuthState,
                      TenantContractTemplate,
                      TenantDateBlock, TenantInvoiceCounter, BookingQuoteRevision,
                      TenantStatus, User, UserSession, Workflow, WorkflowRevision,
                      WorkflowAction, WorkflowStep, WorkflowStepControl)
-from .schemas import (AutomationPauseIn, BookingCreateIn, BrandingPatchIn,
+from .schemas import (AccountAccessIn, AutomationPauseIn, BillingSettingsIn,
+                      BookingCreateIn, BrandingPatchIn,
                       BookingCancelIn, BookingCompleteIn, CalendarSettingsIn, ClientCreateIn,
                       ContractIssueIn, ContractSignIn, ContractTemplateIn,
                       DateBlockIn, EnquiryConvertIn, EnquiryFormIn, EnquiryQuestionIn,
                       HelpArticleIn, HelpAskIn,
                       InvitationAcceptIn, LoginIn, AddOnIn, MailboxSettingsIn,
-                      PackageIn, PaymentRecordIn, PublicEnquiryIn,
+                      PackageIn, PaymentRecordIn, PlatformPaymentIn, PublicEnquiryIn,
                       QuestionnaireSubmitIn, QuestionnaireTemplateIn,
                       QuoteAcceptIn, QuoteAmendmentIn, QuoteDraftIn, SpecialPaymentIn,
-                      TenantCreateIn, TenantStatusIn, TotpConfirmIn,
+                      TenantCreateIn, TenantStatusIn, TotpConfirmIn, TrialExtensionIn,
                       WorkflowBookingControlIn, WorkflowIn, WorkflowModeIn,
                       WorkflowStepIn, InvoiceVoidIn)
 from .security import (clear_login_failures, create_session, csrf_matches,
@@ -105,6 +108,14 @@ DEFAULT_HELP_ARTICLES = (
         "summary": "Prepare the questions, preview the page, then deliberately publish it.",
         "body": "Open Enquiry form from Setup. Write your heading and welcome, review the protected contact and wedding questions, and add any questions of your own. Use Preview form to check the couple's view.\n\nWhen you are happy, switch on Publish this enquiry form and save. The public address can then be linked from your website.",
         "action_label": "Open enquiry form", "action_route": "enquiry", "sort_order": 20,
+    },
+    {
+        "slug": "share-or-embed-enquiry-form", "title": "How do I put my enquiry form on my website?",
+        "category": "Enquiries", "contexts": ["enquiry"], "tour_key": "enquiry",
+        "keywords": ["share enquiry form", "copy link", "iframe", "embed", "website", "wordpress", "elementor", "qr code"],
+        "summary": "Use a direct link, website button, responsive embed or downloadable QR code.",
+        "body": "Open Enquiry form and find Share your enquiry form. Use Copy direct link for social media, emails or an ordinary website button.\n\nFor the form to appear inside your website, copy the responsive embed code and paste it into an HTML or code block. WordPress and Elementor users can paste it into an HTML widget. You can also copy a ready-made enquiry button or download a QR code. Publish the form before sharing any option.",
+        "action_label": "Open enquiry sharing", "action_route": "enquiry", "sort_order": 25,
     },
     {
         "slug": "turn-enquiry-into-wedding", "title": "How do I start a booking from an enquiry?",
@@ -238,11 +249,38 @@ DEFAULT_HELP_ARTICLES = (
 
 
 def ensure_help_catalog(db: Session) -> None:
-    if (db.scalar(select(func.count(HelpArticle.id))) or 0) > 0:
-        return
+    existing = set(db.scalars(select(HelpArticle.slug)).all())
+    added = False
     for item in DEFAULT_HELP_ARTICLES:
-        db.add(HelpArticle(is_published=True, **item))
-    db.commit()
+        if item["slug"] not in existing:
+            db.add(HelpArticle(is_published=True, **item)); added = True
+    if added:
+        db.commit()
+
+
+def ensure_subscription(db: Session, tenant: Tenant) -> TenantSubscription:
+    row = db.get(TenantSubscription, tenant.id)
+    if row:
+        return row
+    trial_days = max(1, (aware(tenant.trial_ends_at).date() - aware(tenant.trial_started_at).date()).days)
+    row = TenantSubscription(
+        tenant_id=tenant.id,
+        billing_status=tenant.status.value,
+        trial_days_granted=trial_days,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def ensure_all_subscriptions(db: Session) -> None:
+    added = False
+    for tenant in db.scalars(select(Tenant)).all():
+        if not db.get(TenantSubscription, tenant.id):
+            ensure_subscription(db, tenant)
+            added = True
+    if added:
+        db.commit()
 
 
 def bootstrap_platform_admin(db: Session) -> None:
@@ -271,6 +309,7 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         bootstrap_platform_admin(db)
         ensure_help_catalog(db)
+        ensure_all_subscriptions(db)
         install_postgres_rls(db)
         db.commit()
     yield
@@ -278,7 +317,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.0-phase-five-guided-help",
+    version="0.5.2-superadmin-billing",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -346,7 +385,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.18-phase-five-guided-help", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.18-phase-five-two-superadmin-billing", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -487,6 +526,57 @@ def invitation_json(row: Invitation, raw_token: str | None = None) -> dict:
     return result
 
 
+def pause_open_workflow_actions(db: Session, tenant_id: str) -> None:
+    actions = db.scalars(select(WorkflowAction).where(
+        WorkflowAction.tenant_id == tenant_id,
+        WorkflowAction.completed_at.is_(None),
+        WorkflowAction.status.notin_(["sent", "completed", "cancelled"]))).all()
+    for action in actions:
+        details = dict(action.payload or {})
+        if action.status != "paused":
+            details["resume_status"] = action.status
+        action.status = "paused"
+        action.payload = details
+
+
+def subscription_json(row: TenantSubscription, tenant: Tenant) -> dict:
+    today = date.today()
+    trial_ends = aware(tenant.trial_ends_at).date()
+    overdue_days = max(0, (today - row.next_payment_due).days) if row.next_payment_due else 0
+    return {
+        "tenant_id": tenant.id,
+        "plan_name": row.plan_name,
+        "price_pence": row.price_pence,
+        "billing_cycle": row.billing_cycle,
+        "billing_status": row.billing_status,
+        "account_status": tenant.status.value,
+        "trial_days_granted": row.trial_days_granted,
+        "trial_ends_at": tenant.trial_ends_at.isoformat(),
+        "trial_days_remaining": max(0, (trial_ends - today).days),
+        "next_payment_due": row.next_payment_due.isoformat() if row.next_payment_due else None,
+        "overdue_days": overdue_days,
+        "grace_days": row.grace_days,
+        "auto_suspend": row.auto_suspend,
+        "provider": row.provider,
+        "last_payment_at": row.last_payment_at.isoformat() if row.last_payment_at else None,
+        "suspended_at": row.suspended_at.isoformat() if row.suspended_at else None,
+        "suspension_reason": row.suspension_reason,
+    }
+
+
+def platform_payment_json(row: PlatformBillingPayment) -> dict:
+    return {
+        "id": row.id,
+        "amount_pence": row.amount_pence,
+        "paid_date": row.paid_date.isoformat(),
+        "payment_method": row.payment_method,
+        "reference": row.reference,
+        "notes": row.notes,
+        "covers_until": row.covers_until.isoformat() if row.covers_until else None,
+        "created_at": row.created_at.isoformat(),
+    }
+
+
 def tenant_json(row: Tenant, db: Session) -> dict:
     member_count = db.scalar(select(func.count(Membership.id)).where(Membership.tenant_id == row.id)) or 0
     latest_invite = db.scalar(select(Invitation).where(Invitation.tenant_id == row.id)
@@ -499,6 +589,7 @@ def tenant_json(row: Tenant, db: Session) -> dict:
         "status": row.status.value,
         "trial_ends_at": row.trial_ends_at.isoformat(),
         "timezone": row.timezone,
+        "branding": row.branding or {},
         "automations_paused": row.automations_paused,
         "member_count": member_count,
         "invitation": invitation_json(latest_invite) if latest_invite else None,
@@ -515,6 +606,15 @@ def manager_summary(_: User = Depends(platform_admin), db: Session = Depends(get
     pending_invites = db.scalar(select(func.count(Invitation.id)).where(
         Invitation.accepted_at.is_(None), Invitation.revoked_at.is_(None), Invitation.expires_at > utcnow()
     )) or 0
+    subscriptions = list(db.scalars(select(TenantSubscription)).all())
+    month_start = date.today().replace(day=1)
+    collected_this_month = db.scalar(select(func.coalesce(func.sum(PlatformBillingPayment.amount_pence), 0)).where(
+        PlatformBillingPayment.paid_date >= month_start)) or 0
+    monthly_recurring = sum(
+        row.price_pence if row.billing_cycle == "monthly" else row.price_pence // 12
+        if row.billing_cycle == "annual" else 0
+        for row in subscriptions if row.billing_status in {"active", "past_due"}
+    )
     return {
         "businesses": len(tenants),
         "trial": statuses["trial"],
@@ -522,6 +622,9 @@ def manager_summary(_: User = Depends(platform_admin), db: Session = Depends(get
         "suspended": statuses["suspended"],
         "pending_invitations": pending_invites,
         "automatic_messages_paused": sum(1 for row in tenants if row.automations_paused),
+        "monthly_recurring_pence": monthly_recurring,
+        "collected_this_month_pence": collected_this_month,
+        "past_due": sum(1 for row in subscriptions if row.billing_status == "past_due"),
     }
 
 
@@ -555,6 +658,11 @@ def create_tenant(payload: TenantCreateIn, request: Request,
     )
     db.add(tenant)
     db.flush()
+    db.add(TenantSubscription(
+        tenant_id=tenant.id,
+        billing_status="trial",
+        trial_days_granted=settings.trial_days,
+    ))
     db.add(Workflow(
         tenant_id=tenant.id,
         name="Main client journey",
@@ -598,8 +706,16 @@ def change_tenant_status(tenant_id: str, payload: TenantStatusIn, request: Reque
         raise HTTPException(404, "Business not found")
     old = tenant.status.value
     tenant.status = TenantStatus(payload.status)
+    subscription = ensure_subscription(db, tenant)
+    subscription.billing_status = tenant.status.value
     if tenant.status in {TenantStatus.SUSPENDED, TenantStatus.CANCELLED}:
         tenant.automations_paused = True
+        subscription.suspended_at = utcnow()
+        subscription.suspension_reason = payload.reason
+        pause_open_workflow_actions(db, tenant.id)
+    elif tenant.status == TenantStatus.ACTIVE:
+        subscription.suspended_at = None
+        subscription.suspension_reason = ""
     audit(db, "tenant_status_changed", "tenant", tenant.id, actor=admin,
           tenant_id=tenant.id, request=request,
           detail={"from": old, "to": tenant.status.value, "reason": payload.reason})
@@ -635,19 +751,208 @@ def pause_tenant_automations(tenant_id: str, payload: AutomationPauseIn, request
     return tenant_json(tenant, db)
 
 
+@app.get("/api/manager/billing")
+def manager_billing(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    tenants = list(db.scalars(select(Tenant).order_by(Tenant.display_name)).all())
+    accounts = []
+    for tenant in tenants:
+        subscription = ensure_subscription(db, tenant)
+        accounts.append({
+            "tenant": tenant_json(tenant, db),
+            "subscription": subscription_json(subscription, tenant),
+        })
+    month_start = date.today().replace(day=1)
+    collected = db.scalar(select(func.coalesce(func.sum(PlatformBillingPayment.amount_pence), 0)).where(
+        PlatformBillingPayment.paid_date >= month_start)) or 0
+    recurring = sum(
+        item["subscription"]["price_pence"]
+        if item["subscription"]["billing_cycle"] == "monthly"
+        else item["subscription"]["price_pence"] // 12
+        if item["subscription"]["billing_cycle"] == "annual"
+        else 0
+        for item in accounts
+        if item["subscription"]["billing_status"] in {"active", "past_due"}
+    )
+    db.commit()
+    return {
+        "summary": {
+            "projected_monthly_pence": recurring,
+            "collected_this_month_pence": collected,
+            "trials": sum(1 for item in accounts if item["subscription"]["billing_status"] == "trial"),
+            "past_due": sum(1 for item in accounts if item["subscription"]["billing_status"] == "past_due"),
+            "suspended": sum(1 for item in accounts if item["tenant"]["status"] == "suspended"),
+        },
+        "accounts": accounts,
+    }
+
+
+@app.get("/api/manager/tenants/{tenant_id}/billing")
+def tenant_billing(tenant_id: str, _: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Business not found")
+    subscription = ensure_subscription(db, tenant)
+    payments = db.scalars(select(PlatformBillingPayment).where(
+        PlatformBillingPayment.tenant_id == tenant.id
+    ).order_by(PlatformBillingPayment.paid_date.desc(), PlatformBillingPayment.created_at.desc())).all()
+    result = {
+        "tenant": tenant_json(tenant, db),
+        "subscription": subscription_json(subscription, tenant),
+        "payments": [platform_payment_json(row) for row in payments],
+    }
+    db.commit()
+    return result
+
+
+@app.put("/api/manager/tenants/{tenant_id}/billing")
+def update_tenant_billing(tenant_id: str, payload: BillingSettingsIn, request: Request,
+                          admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Business not found")
+    subscription = ensure_subscription(db, tenant)
+    before = subscription_json(subscription, tenant)
+    subscription.plan_name = payload.plan_name.strip()
+    subscription.price_pence = payload.price_pence
+    subscription.billing_cycle = payload.billing_cycle
+    subscription.next_payment_due = payload.next_payment_due
+    subscription.grace_days = payload.grace_days
+    subscription.auto_suspend = payload.auto_suspend
+    audit(db, "billing_settings_changed", "tenant_subscription", tenant.id,
+          actor=admin, tenant_id=tenant.id, request=request,
+          detail={"before": before, "after": payload.model_dump(mode="json")})
+    db.commit()
+    return subscription_json(subscription, tenant)
+
+
+@app.post("/api/manager/tenants/{tenant_id}/trial")
+def extend_tenant_trial(tenant_id: str, payload: TrialExtensionIn, request: Request,
+                        admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Business not found")
+    old_end = tenant.trial_ends_at.isoformat()
+    tenant.status = TenantStatus.TRIAL
+    tenant.trial_ends_at = utcnow() + timedelta(days=payload.days)
+    tenant.automations_paused = True
+    subscription = ensure_subscription(db, tenant)
+    subscription.billing_status = "trial"
+    subscription.trial_days_granted = payload.days
+    subscription.next_payment_due = None
+    subscription.suspended_at = None
+    subscription.suspension_reason = ""
+    pause_open_workflow_actions(db, tenant.id)
+    audit(db, "trial_extended", "tenant", tenant.id, actor=admin,
+          tenant_id=tenant.id, request=request,
+          detail={"days": payload.days, "old_end": old_end,
+                  "new_end": tenant.trial_ends_at.isoformat(), "note": payload.note})
+    db.commit()
+    return {"tenant": tenant_json(tenant, db), "subscription": subscription_json(subscription, tenant)}
+
+
+@app.post("/api/manager/tenants/{tenant_id}/billing/payments", status_code=201)
+def record_platform_payment(tenant_id: str, payload: PlatformPaymentIn, request: Request,
+                            admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Business not found")
+    subscription = ensure_subscription(db, tenant)
+    payment = PlatformBillingPayment(
+        tenant_id=tenant.id,
+        amount_pence=payload.amount_pence,
+        paid_date=payload.paid_date,
+        payment_method=payload.payment_method,
+        reference=payload.reference.strip(),
+        notes=payload.notes.strip(),
+        covers_until=payload.covers_until,
+        created_by_user_id=admin.id,
+    )
+    db.add(payment)
+    subscription.last_payment_at = utcnow()
+    if payload.covers_until:
+        subscription.next_payment_due = payload.covers_until
+    if payload.reactivate:
+        tenant.status = TenantStatus.ACTIVE
+        subscription.billing_status = "active"
+        subscription.suspended_at = None
+        subscription.suspension_reason = ""
+        tenant.automations_paused = True
+        pause_open_workflow_actions(db, tenant.id)
+    db.flush()
+    audit(db, "platform_payment_recorded", "platform_billing_payment", payment.id,
+          actor=admin, tenant_id=tenant.id, request=request,
+          detail={"amount_pence": payment.amount_pence, "paid_date": payment.paid_date.isoformat(),
+                  "method": payment.payment_method, "reference": payment.reference,
+                  "reactivated": payload.reactivate})
+    result = platform_payment_json(payment)
+    db.commit()
+    return result
+
+
+@app.post("/api/manager/tenants/{tenant_id}/billing/suspend")
+def suspend_tenant_account(tenant_id: str, payload: AccountAccessIn, request: Request,
+                           admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Business not found")
+    old = tenant.status.value
+    tenant.status = TenantStatus.SUSPENDED
+    tenant.automations_paused = True
+    subscription = ensure_subscription(db, tenant)
+    subscription.billing_status = "suspended"
+    subscription.suspended_at = utcnow()
+    subscription.suspension_reason = payload.reason.strip()
+    if payload.next_payment_due:
+        subscription.next_payment_due = payload.next_payment_due
+    pause_open_workflow_actions(db, tenant.id)
+    audit(db, "tenant_suspended", "tenant", tenant.id, actor=admin,
+          tenant_id=tenant.id, request=request,
+          detail={"from": old, "reason": payload.reason, "data_deleted": False})
+    db.commit()
+    return {"tenant": tenant_json(tenant, db), "subscription": subscription_json(subscription, tenant)}
+
+
+@app.post("/api/manager/tenants/{tenant_id}/billing/reactivate")
+def reactivate_tenant_account(tenant_id: str, payload: AccountAccessIn, request: Request,
+                              admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Business not found")
+    old = tenant.status.value
+    tenant.status = TenantStatus.ACTIVE
+    tenant.automations_paused = True
+    subscription = ensure_subscription(db, tenant)
+    subscription.billing_status = "active"
+    subscription.suspended_at = None
+    subscription.suspension_reason = ""
+    if payload.next_payment_due:
+        subscription.next_payment_due = payload.next_payment_due
+    pause_open_workflow_actions(db, tenant.id)
+    audit(db, "tenant_reactivated", "tenant", tenant.id, actor=admin,
+          tenant_id=tenant.id, request=request,
+          detail={"from": old, "reason": payload.reason,
+                  "next_payment_due": subscription.next_payment_due.isoformat()
+                  if subscription.next_payment_due else None,
+                  "automations_remain_paused": True})
+    db.commit()
+    return {"tenant": tenant_json(tenant, db), "subscription": subscription_json(subscription, tenant)}
+
+
 @app.get("/api/manager/tenants/{tenant_id}/support")
 def support_view(tenant_id: str, request: Request,
                  admin: User = Depends(platform_admin), db: Session = Depends(get_db)):
     tenant = db.get(Tenant, tenant_id)
     if not tenant:
         raise HTTPException(404, "Business not found")
+    subscription = ensure_subscription(db, tenant)
     client_count = db.scalar(select(func.count(Client.id)).where(Client.tenant_id == tenant.id)) or 0
     booking_count = db.scalar(select(func.count(Booking.id)).where(Booking.tenant_id == tenant.id)) or 0
     audit(db, "support_view_opened", "tenant", tenant.id, actor=admin,
           tenant_id=tenant.id, request=request,
           detail={"scope": "health_and_counts_only"})
     db.commit()
-    return {"tenant": tenant_json(tenant, db), "client_count": client_count,
+    return {"tenant": tenant_json(tenant, db), "billing": subscription_json(subscription, tenant),
+            "client_count": client_count,
             "booking_count": booking_count, "storage_key": tenant.storage_key,
             "data_access": "No couple details opened"}
 
@@ -1053,7 +1358,7 @@ def studio_dashboard(context=Depends(studio_context), db: Session = Depends(get_
         "client_count": client_count,
         "booking_count": booking_count,
         "enquiry_count": enquiry_count,
-        "phase": "Complete booking journey release candidate",
+        "phase": "Complete journey with guided help and enquiry sharing",
     }
 
 
@@ -1245,6 +1550,20 @@ def get_enquiry_form(context=Depends(studio_context), db: Session = Depends(get_
     result = enquiry_form_json(row, tenant)
     result["questions"] = [enquiry_question_json(item) for item in questions]
     return result
+
+
+@app.get("/api/studio/enquiry-form/qr")
+def download_enquiry_qr(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    config = db.get(EnquiryFormConfig, tenant.id)
+    if not config or not config.is_published:
+        raise HTTPException(409, "Publish the enquiry form before downloading its QR code")
+    public_url = f"{settings.client_url.rstrip('/')}/{tenant.slug}/enquire"
+    buffer = io.BytesIO()
+    qrcode.make(public_url, image_factory=qrcode.image.svg.SvgPathImage).save(buffer)
+    filename = f"{tenant.slug}-enquiry-form-qr.svg"
+    return Response(content=buffer.getvalue(), media_type="image/svg+xml",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.get("/api/studio/enquiries")

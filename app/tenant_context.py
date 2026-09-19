@@ -52,7 +52,8 @@ def install_postgres_rls(db: Session) -> None:
                        "questionnaire_templates", "questionnaire_submissions",
                        "tenant_calendar_connections", "tenant_calendar_oauth_states",
                        "tenant_date_blocks",
-                       "workflow_step_controls", "workflow_actions"):
+                       "workflow_step_controls", "workflow_actions",
+                       "tenant_subscriptions", "platform_billing_payments"):
         db.execute(text(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY"))
         db.execute(text(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY"))
         db.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table_name}"))

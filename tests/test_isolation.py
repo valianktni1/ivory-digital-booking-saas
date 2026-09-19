@@ -1,10 +1,12 @@
 from urllib.parse import parse_qs, urlparse
+from datetime import datetime, timezone
 
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app, ensure_public_mail_host
+from app.worker import process_billing_statuses
 
 
 def csrf(client: TestClient) -> dict:
@@ -73,6 +75,46 @@ def test_manager_mfa_and_cross_tenant_isolation():
 
         alpha_client = accept(alpha, "Alex Alpha")
         beta_client = accept(beta, "Ben Beta")
+
+        billing_centre = manager.get("/api/manager/billing")
+        assert billing_centre.status_code == 200
+        assert {row["tenant"]["slug"] for row in billing_centre.json()["accounts"]} == {
+            "alpha-weddings", "beta-films"
+        }
+        extended = manager.post(f"/api/manager/tenants/{alpha['id']}/trial", headers=csrf(manager), json={
+            "days": 120, "note": "Extended for a full platform trial"
+        })
+        assert extended.status_code == 200, extended.text
+        assert extended.json()["subscription"]["trial_days_granted"] == 120
+        assert extended.json()["tenant"]["automations_paused"] is True
+        plan = manager.put(f"/api/manager/tenants/{alpha['id']}/billing", headers=csrf(manager), json={
+            "plan_name": "Ivory Pro", "price_pence": 4900, "billing_cycle": "monthly",
+            "next_payment_due": "2026-10-18", "grace_days": 7, "auto_suspend": True,
+        })
+        assert plan.status_code == 200, plan.text
+        assert plan.json()["price_pence"] == 4900
+        paid = manager.post(f"/api/manager/tenants/{alpha['id']}/billing/payments", headers=csrf(manager), json={
+            "amount_pence": 4900, "paid_date": "2026-09-18", "payment_method": "bank_transfer",
+            "reference": "TEST-ALPHA-001", "notes": "Test subscription payment",
+            "covers_until": "2026-10-18", "reactivate": True,
+        })
+        assert paid.status_code == 201, paid.text
+        alpha_billing = manager.get(f"/api/manager/tenants/{alpha['id']}/billing").json()
+        assert alpha_billing["tenant"]["status"] == "active"
+        assert alpha_billing["tenant"]["automations_paused"] is True
+        assert alpha_billing["payments"][0]["reference"] == "TEST-ALPHA-001"
+
+        suspended = manager.post(f"/api/manager/tenants/{beta['id']}/billing/suspend", headers=csrf(manager), json={
+            "reason": "Subscription payment overdue", "next_payment_due": "2026-09-10"
+        })
+        assert suspended.status_code == 200, suspended.text
+        assert beta_client.get("/api/studio/dashboard").status_code == 403
+        reactivated = manager.post(f"/api/manager/tenants/{beta['id']}/billing/reactivate", headers=csrf(manager), json={
+            "reason": "Payment arrangement agreed", "next_payment_due": "2026-10-18"
+        })
+        assert reactivated.status_code == 200, reactivated.text
+        assert reactivated.json()["tenant"]["automations_paused"] is True
+        assert beta_client.get("/api/studio/dashboard").status_code == 200
 
         help_library = manager.get("/api/manager/help/articles")
         assert help_library.status_code == 200
@@ -183,6 +225,11 @@ def test_manager_mfa_and_cross_tenant_isolation():
             "ask_package_interest": True, "ask_message": True, "is_published": True,
         })
         assert enquiry_form.status_code == 200, enquiry_form.text
+        enquiry_qr = alpha_client.get("/api/studio/enquiry-form/qr")
+        assert enquiry_qr.status_code == 200
+        assert enquiry_qr.headers["content-type"] == "image/svg+xml"
+        assert b"<svg" in enquiry_qr.content
+        assert beta_client.get("/api/studio/enquiry-form/qr").status_code == 409
         protected_question = enquiry_form.json()["questions"][0]
         protected_delete = alpha_client.delete(
             f"/api/studio/enquiry-form/questions/{protected_question['id']}",
@@ -392,6 +439,17 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert "owner_email" not in public.text
         assert "storage_key" not in public.text
 
+        overdue = manager.put(f"/api/manager/tenants/{beta['id']}/billing", headers=csrf(manager), json={
+            "plan_name": "Ivory Studio", "price_pence": 3900, "billing_cycle": "monthly",
+            "next_payment_due": "2026-09-01", "grace_days": 3, "auto_suspend": True,
+        })
+        assert overdue.status_code == 200, overdue.text
+        process_billing_statuses(datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc))
+        beta_billing = manager.get(f"/api/manager/tenants/{beta['id']}/billing").json()
+        assert beta_billing["tenant"]["status"] == "suspended"
+        assert beta_billing["subscription"]["billing_status"] == "suspended"
+        assert beta_client.get("/api/studio/dashboard").status_code == 403
+
 
 def test_frontend_assets_do_not_reference_live_wbm():
     from pathlib import Path
@@ -404,6 +462,13 @@ def test_frontend_assets_do_not_reference_live_wbm():
     ).lower()
     assert "weddings by mark" not in text
     assert "booking.weddingsbymark" not in text
+    client_nginx = (root / "client" / "nginx.conf").read_text()
+    assert 'X-Frame-Options "DENY"' in client_nginx
+    assert "frame-ancestors 'none'" in client_nginx
+    assert "frame-ancestors https:" in client_nginx
+    client_dockerfile = (root / "client" / "Dockerfile").read_text()
+    assert "portal.css" in client_dockerfile
+    assert "embed.js" in client_dockerfile
 
 
 def test_login_throttle_locks_repeated_bad_attempts():

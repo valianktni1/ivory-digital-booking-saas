@@ -10,9 +10,9 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release
+## Current release — Phase 5.2
 
-Phase Five Guided Help includes the complete booking journey plus an interactive support layer:
+Phase 5.2 includes the complete booking journey, interactive support, enquiry-form sharing and the Ivory Digital subscription-control foundation:
 
 - Tenant-isolated enquiry forms and custom questions.
 - Enquiry conversion into a wedding journey.
@@ -33,6 +33,14 @@ Phase Five Guided Help includes the complete booking journey plus an interactive
 - Suggested questions tailored to the screen currently being viewed.
 - Interactive guided tours that highlight the real controls step by step on desktop and mobile.
 - A central Manager help library where Ivory Digital can edit, publish or hide answers for every studio.
+- Enquiry-form sharing with a direct link, ready-made website button, responsive website embed and downloadable QR code.
+- A clean embedded enquiry layout with automatic height updates for WordPress, Elementor and other HTTPS websites.
+- A dedicated Manager billing centre with plan prices, billing cycles and renewal dates.
+- One-click trial periods of 30, 60, 90 or 120 days.
+- Manual subscription-payment history for bank transfer, card, Stripe, cash or other confirmed payments.
+- Manual and automatic non-payment suspension with a configurable grace period.
+- Safe reactivation that restores Studio access while leaving client automations paused.
+- No suspension or trial action deletes photographer, couple, booking, invoice or document data.
 
 ## Safety defaults
 
@@ -51,7 +59,9 @@ Google Calendar connection requires an Ivory Digital Google OAuth web applicatio
 
 `https://studio.ivorydigital.uk/api/integrations/google-calendar/callback`
 
-Card processing is not enabled in this release. Payments are deliberately recorded after they have been received by bank transfer, cash or another external method.
+Automated SaaS card collection is not connected in this release. Manager can securely record confirmed subscription payments now; a payment-provider checkout and webhook can be added once Ivory Digital chooses and configures its provider.
+
+Couple payments inside each photography studio are still deliberately recorded only after the photographer has received them by bank transfer, cash, card or another external method.
 
 ## Local development
 
@@ -63,4 +73,4 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-GUIDED-HELP.md`.
+For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-TWO-SUPERADMIN-BILLING.md`.

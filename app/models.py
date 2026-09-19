@@ -540,3 +540,38 @@ class HelpArticle(Base):
     sort_order: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class TenantSubscription(Base):
+    __tablename__ = "tenant_subscriptions"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    plan_name: Mapped[str] = mapped_column(String(120), default="Ivory Booking Studio")
+    price_pence: Mapped[int] = mapped_column(default=0)
+    billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly")
+    billing_status: Mapped[str] = mapped_column(String(30), default="trial", index=True)
+    trial_days_granted: Mapped[int] = mapped_column(default=30)
+    next_payment_due: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    grace_days: Mapped[int] = mapped_column(default=7)
+    auto_suspend: Mapped[bool] = mapped_column(Boolean, default=True)
+    provider: Mapped[str] = mapped_column(String(30), default="manual")
+    provider_customer_id: Mapped[str] = mapped_column(String(200), default="")
+    provider_subscription_id: Mapped[str] = mapped_column(String(200), default="")
+    last_payment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    suspension_reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class PlatformBillingPayment(Base):
+    __tablename__ = "platform_billing_payments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount_pence: Mapped[int] = mapped_column(nullable=False)
+    paid_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    payment_method: Mapped[str] = mapped_column(String(30), default="bank_transfer")
+    reference: Mapped[str] = mapped_column(String(180), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    covers_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

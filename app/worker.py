@@ -1,7 +1,7 @@
 import smtplib
 import ssl
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.message import EmailMessage
 
 from redis import Redis
@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from .config import get_settings
 from .database import SessionLocal
 from .models import (AuditLog, Booking, Client, MailboxSetting, Tenant,
-                     UserSession, WorkflowAction)
+                     TenantStatus, TenantSubscription, UserSession, WorkflowAction)
 from .security import decrypt_secret
 from .tenant_context import set_database_tenant
 
@@ -109,6 +109,70 @@ def process_workflow_actions() -> None:
             db.commit()
 
 
+def pause_open_actions(db, tenant_id: str) -> None:
+    actions = db.scalars(select(WorkflowAction).where(
+        WorkflowAction.tenant_id == tenant_id,
+        WorkflowAction.completed_at.is_(None),
+        WorkflowAction.status.notin_(["sent", "completed", "cancelled"]))).all()
+    for action in actions:
+        payload = dict(action.payload or {})
+        if action.status != "paused":
+            payload["resume_status"] = action.status
+        action.status = "paused"
+        action.payload = payload
+
+
+def process_billing_statuses(now: datetime | None = None) -> None:
+    current = now or datetime.now(timezone.utc)
+    today: date = current.date()
+    with SessionLocal() as db:
+        set_database_tenant(db, platform_admin=True)
+        rows = db.execute(select(Tenant, TenantSubscription).join(
+            TenantSubscription, TenantSubscription.tenant_id == Tenant.id)).all()
+        for tenant, subscription in rows:
+            if tenant.status == TenantStatus.CANCELLED:
+                continue
+            previous = subscription.billing_status
+            reason = ""
+            if tenant.status == TenantStatus.TRIAL and aware(tenant.trial_ends_at) <= current:
+                reason = "Trial ended without an active subscription"
+            elif tenant.status == TenantStatus.ACTIVE and subscription.next_payment_due:
+                overdue_days = (today - subscription.next_payment_due).days
+                if overdue_days > subscription.grace_days and subscription.auto_suspend:
+                    reason = (
+                        f"Payment was {overdue_days} days overdue; "
+                        f"the {subscription.grace_days}-day grace period ended"
+                    )
+                elif overdue_days > 0:
+                    subscription.billing_status = "past_due"
+                elif previous == "past_due":
+                    subscription.billing_status = "active"
+            if reason:
+                tenant.status = TenantStatus.SUSPENDED
+                tenant.automations_paused = True
+                subscription.billing_status = "suspended"
+                subscription.suspended_at = current
+                subscription.suspension_reason = reason
+                pause_open_actions(db, tenant.id)
+                db.add(AuditLog(
+                    tenant_id=tenant.id,
+                    action="tenant_auto_suspended",
+                    subject_type="tenant",
+                    subject_id=tenant.id,
+                    detail={"reason": reason, "data_deleted": False,
+                            "automations_paused": True},
+                ))
+            elif previous != subscription.billing_status:
+                db.add(AuditLog(
+                    tenant_id=tenant.id,
+                    action="billing_status_changed",
+                    subject_type="tenant_subscription",
+                    subject_id=tenant.id,
+                    detail={"from": previous, "to": subscription.billing_status},
+                ))
+        db.commit()
+
+
 def run() -> None:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
@@ -120,6 +184,7 @@ def run() -> None:
                 set_database_tenant(db, platform_admin=True)
                 db.execute(delete(UserSession).where(UserSession.expires_at < now))
                 db.commit()
+            process_billing_statuses(now)
             process_workflow_actions()
         except Exception:
             # Docker restarts unhealthy dependencies; the worker retries without
