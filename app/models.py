@@ -151,6 +151,7 @@ class Booking(Base):
     title: Mapped[str] = mapped_column(String(200))
     event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     venue: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    venue_details: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(40), default="enquiry", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     client: Mapped[Client] = relationship()
@@ -295,6 +296,7 @@ class Enquiry(Base):
     phone: Mapped[str] = mapped_column(String(50), default="")
     event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     venue: Mapped[str] = mapped_column(String(240), default="")
+    venue_details: Mapped[dict] = mapped_column(JSON, default=dict)
     package_interest: Mapped[str] = mapped_column(String(160), default="")
     message: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="new", index=True)
@@ -471,6 +473,7 @@ class TenantCalendarConnection(Base):
     refresh_token_encrypted: Mapped[str] = mapped_column(Text, default="")
     scope: Mapped[str] = mapped_column(Text, default="")
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
 
 

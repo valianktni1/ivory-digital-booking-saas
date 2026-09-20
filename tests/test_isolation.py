@@ -43,12 +43,21 @@ def test_phase_five_three_additive_column_upgrade():
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE service_packages (id VARCHAR(36) PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE package_add_ons (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE enquiries (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE bookings (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE tenant_calendar_connections (tenant_id VARCHAR(36) PRIMARY KEY)"))
     with Session(engine) as session:
         ensure_compatibility_columns(session)
         package_columns = {row[1] for row in session.execute(text("PRAGMA table_info(service_packages)"))}
         add_on_columns = {row[1] for row in session.execute(text("PRAGMA table_info(package_add_ons)"))}
+        enquiry_columns = {row[1] for row in session.execute(text("PRAGMA table_info(enquiries)"))}
+        booking_columns = {row[1] for row in session.execute(text("PRAGMA table_info(bookings)"))}
+        calendar_columns = {row[1] for row in session.execute(text("PRAGMA table_info(tenant_calendar_connections)"))}
     assert "information_url" in package_columns
     assert "information_url" in add_on_columns
+    assert "venue_details" in enquiry_columns
+    assert "venue_details" in booking_columns
+    assert "last_synced_at" in calendar_columns
 
 
 def test_manager_mfa_and_cross_tenant_isolation():
@@ -285,9 +294,13 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert public_form.status_code == 200
         assert public_form.json()["packages"][0]["name"] == "Story Collection"
         assert any(item["question_type"] == "venue" for item in public_form.json()["questions"])
+        assert public_form.json()["google_places"]["manual_entry_available"] is True
         submitted = manager.post("/api/public/business/alpha-weddings/enquiries", json={
             "first_name": "Taylor", "partner_name": "Jordan", "email": "taylor@example.com",
             "phone": "07000111222", "event_date": "2027-08-14", "venue": "Test Hall",
+            "venue_details": {"place_id": "test-place-alpha", "name": "Test Hall",
+                              "formatted_address": "Test Hall, Alpha Road, Manchester",
+                              "latitude": 53.4808, "longitude": -2.2426},
             "package_interest": "Story Collection", "message": "We love relaxed photographs.",
             "website": "", "answers": {custom_question_id: "Google"},
         })
@@ -295,6 +308,8 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert submitted.json()["automatic_reply"] == "paused"
         enquiries = alpha_client.get("/api/studio/enquiries").json()
         assert len(enquiries) == 1
+        assert enquiries[0]["venue_details"]["place_id"] == "test-place-alpha"
+        assert "destination_place_id=test-place-alpha" in enquiries[0]["venue_maps_url"]
         assert enquiries[0]["answers"] == [{"label": "How did you hear about us?", "answer": "Google"}]
         assert beta_client.get("/api/studio/enquiries").json() == []
 
@@ -305,6 +320,8 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert converted.status_code == 201, converted.text
         booking_id = converted.json()["id"]
         assert converted.json()["status"] == "quote_preparation"
+        assert converted.json()["venue_details"]["formatted_address"].startswith("Test Hall")
+        assert "destination_place_id=test-place-alpha" in converted.json()["venue_maps_url"]
         assert beta_client.get(f"/api/studio/bookings/{booking_id}/journey").status_code == 404
 
         mode = alpha_client.put(

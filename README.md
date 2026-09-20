@@ -10,9 +10,20 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release — Phase 5.4
+## Current release — Phase 5.5
 
-Phase 5.4 combines the planned 5.4 and 5.5 work into one complete photographer workspace and communications release. It includes everything from Phase 5.3 plus:
+Phase 5.5 adds production-ready tenant Calendar setup and exact venue handling to the complete Phase 5.4 photographer workspace. It includes:
+
+- A separate Google OAuth connection and encrypted refresh token for every tenant.
+- A photographer-facing picker containing only calendars they can write to.
+- Deterministic booking and date-block events with safe create, update, removal and retry.
+- Calendar health counts, last successful sync, errors and a one-wedding retry control.
+- No Google guests or couple email invitations.
+- Google Places autocomplete on every published tenant enquiry form, with manual entry retained.
+- Structured venue name, address, Place ID and coordinates carried from enquiry to wedding.
+- One-tap Google Maps directions from the photographer's wedding workspace.
+
+Phase 5.4 supplied the complete photographer workspace and communications release, including:
 
 - A final private-beta polish pass with clearer typography, stronger mobile navigation, accessible focus states and calmer everyday screens.
 - Setup that reaches a genuine 100%, then folds away so returning photographers land on the work that matters today.
@@ -79,9 +90,14 @@ The full platform still includes:
 
 ## External services
 
-Google Calendar connection requires an Ivory Digital Google OAuth web application with this redirect URI:
+Google Calendar connection requires one Ivory Digital Google OAuth web application with this redirect URI:
 
 `https://studio.ivorydigital.uk/api/integrations/google-calendar/callback`
+
+Venue autocomplete requires a browser-restricted Google Maps Platform key with
+Maps JavaScript API and Places API (New) enabled. Restrict the key to:
+
+`https://client.ivorydigital.uk/*`
 
 Automated SaaS card collection is not connected in this release. Manager can securely record confirmed subscription payments now; a payment-provider checkout and webhook can be added once Ivory Digital chooses and configures its provider.
 

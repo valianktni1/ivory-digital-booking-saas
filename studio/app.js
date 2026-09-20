@@ -67,7 +67,7 @@ async function showSection(name){currentSection=name;['home','enquiries','weddin
 function closeMenu(){$('#sidebar').classList.remove('open');$('#scrim').classList.add('hidden')}
 
 async function openStudio(){
-  try{dashboard=await api('/api/studio/dashboard');const wanted=`/${dashboard.tenant.slug}`;if(location.pathname!==wanted)history.replaceState({},'',wanted);$('#auth-view').classList.add('hidden');$('#studio-view').classList.remove('hidden');render();await Promise.all([loadToday(),updateUnreadCount()])}
+  try{const calendarResult=new URLSearchParams(location.search).get('google_calendar');dashboard=await api('/api/studio/dashboard');const wanted=`/${dashboard.tenant.slug}`;if(location.pathname!==wanted||location.search)history.replaceState({},'',wanted);$('#auth-view').classList.add('hidden');$('#studio-view').classList.remove('hidden');render();await Promise.all([loadToday(),updateUnreadCount()]);if(calendarResult){await showSection('calendar');toast(calendarResult==='connected'?'Google Calendar connected. Now choose the calendar this studio should use.':'Google Calendar could not be connected. Please try again.',calendarResult!=='connected')}}
   catch{$('#auth-view').classList.remove('hidden');$('#studio-view').classList.add('hidden')}
 }
 

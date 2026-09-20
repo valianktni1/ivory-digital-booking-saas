@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     google_calendar_client_secret: str = ""
     google_calendar_redirect_uri: str = ""
     google_calendar_timeout_seconds: int = Field(default=20, ge=5, le=60)
+    google_maps_browser_api_key: str = ""
+    google_places_region_codes: str = "gb"
 
     @model_validator(mode="after")
     def validate_production_security(self):

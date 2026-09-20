@@ -74,11 +74,20 @@ class ClientCreateIn(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
 
 
+class VenueDetailsIn(BaseModel):
+    place_id: str = Field(default="", max_length=255)
+    name: str = Field(default="", max_length=240)
+    formatted_address: str = Field(default="", max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+
 class BookingCreateIn(BaseModel):
     client_id: str
     title: str = Field(min_length=2, max_length=200)
     event_date: date | None = None
     venue: str | None = Field(default=None, max_length=240)
+    venue_details: VenueDetailsIn | None = None
 
 
 class BrandingPatchIn(BaseModel):
@@ -188,6 +197,7 @@ class PublicEnquiryIn(BaseModel):
     phone: str = Field(default="", max_length=50)
     event_date: date | None = None
     venue: str = Field(default="", max_length=240)
+    venue_details: VenueDetailsIn | None = None
     package_interest: str = Field(default="", max_length=160)
     message: str = Field(default="", max_length=4000)
     website: str = Field(default="", max_length=200)  # Honeypot; must remain empty.
@@ -389,6 +399,7 @@ class BookingUpdateIn(BaseModel):
     phone: str = Field(default="", max_length=50)
     event_date: date | None = None
     venue: str = Field(default="", max_length=240)
+    venue_details: VenueDetailsIn | None = None
 
 
 class BookingRescheduleIn(BaseModel):

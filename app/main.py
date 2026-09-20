@@ -220,8 +220,8 @@ DEFAULT_HELP_ARTICLES = (
         "slug": "connect-google-calendar", "title": "How do I connect Google Calendar?",
         "category": "Calendar", "contexts": ["calendar", "home"], "tour_key": "calendar",
         "keywords": ["google calendar", "connect calendar", "sync", "calendar account", "events"],
-        "summary": "Connect your own Google account and keep client invitations switched off.",
-        "body": "Open Calendar and choose Connect Google Calendar. Sign into the Google account you want to use, approve the requested calendar access, then return to Studio.\n\nSecured weddings and blocked dates sync as private one-way events. Couples are never added as guests, so Google does not email them.",
+        "summary": "Connect your own Google account, choose a calendar and keep client invitations switched off.",
+        "body": "Open Calendar and choose Connect Google Calendar. Sign into the Google account you want to use, approve the requested calendar access, then return to Studio and choose the writable calendar for this business.\n\nSecured weddings and blocked dates sync as private one-way events. Couples are never added as guests, so Google does not email them. Sync safely retries anything waiting or needing attention.",
         "action_label": "Open calendar", "action_route": "calendar", "sort_order": 130,
     },
     {
@@ -231,6 +231,14 @@ DEFAULT_HELP_ARTICLES = (
         "summary": "Block one day or a date range from the Calendar screen.",
         "body": "Open Calendar, enter the first and last unavailable dates, give the block a clear label, and save it. Use the same date twice for a single day.\n\nThe block is included in public availability immediately and is added to Google Calendar when a connection is available.",
         "action_label": "Block dates", "action_route": "calendar", "sort_order": 140,
+    },
+    {
+        "slug": "find-a-venue-and-directions", "title": "How do venue search and directions work?",
+        "category": "Enquiries", "contexts": ["enquiry", "enquiries", "weddings"],
+        "keywords": ["venue", "google places", "address", "maps", "directions", "sat nav"],
+        "summary": "Couples can select an exact venue and you can open directions from their wedding.",
+        "body": "On the public enquiry form, the couple starts typing a venue name or address and chooses the exact Google result. Manual entry remains available if their venue is not listed.\n\nThe venue name, address and Google Place reference stay with that tenant's enquiry and carry into the wedding. Open the wedding and choose Get directions to launch Google Maps without retyping the address.",
+        "action_label": "Open enquiry form", "action_route": "enquiry", "sort_order": 145,
     },
     {
         "slug": "complete-wedding", "title": "How do I complete a wedding?",
@@ -315,6 +323,14 @@ def ensure_help_catalog(db: Session) -> None:
         questionnaire_help.body = current["body"]
         questionnaire_help.keywords = current["keywords"]
         added = True
+    calendar_help = existing_rows.get("connect-google-calendar")
+    if calendar_help and "approve the requested calendar access, then return to studio" in calendar_help.body.lower() and "choose the writable calendar" not in calendar_help.body.lower():
+        current = next(item for item in DEFAULT_HELP_ARTICLES if item["slug"] == calendar_help.slug)
+        calendar_help.title = current["title"]
+        calendar_help.summary = current["summary"]
+        calendar_help.body = current["body"]
+        calendar_help.keywords = current["keywords"]
+        added = True
     if added:
         db.commit()
 
@@ -345,17 +361,27 @@ def ensure_all_subscriptions(db: Session) -> None:
 
 
 def ensure_compatibility_columns(db: Session) -> None:
-    """Add Phase 5.3 link fields to an existing Phase 5.2 database safely."""
+    """Add backwards-compatible release fields without replacing tenant data."""
     if db.bind is None:
         return
     if db.bind.dialect.name == "postgresql":
         db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
         db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        db.execute(text("ALTER TABLE enquiries ADD COLUMN IF NOT EXISTS venue_details JSON NOT NULL DEFAULT '{}'::json"))
+        db.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS venue_details JSON NOT NULL DEFAULT '{}'::json"))
+        db.execute(text("ALTER TABLE tenant_calendar_connections ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ"))
     elif db.bind.dialect.name == "sqlite":
         for table_name in ("service_packages", "package_add_ons"):
             columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
             if "information_url" not in columns:
                 db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        for table_name in ("enquiries", "bookings"):
+            columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
+            if columns and "venue_details" not in columns:
+                db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN venue_details JSON NOT NULL DEFAULT '{{}}'"))
+        calendar_columns = {row[1] for row in db.execute(text("PRAGMA table_info(tenant_calendar_connections)"))}
+        if calendar_columns and "last_synced_at" not in calendar_columns:
+            db.execute(text("ALTER TABLE tenant_calendar_connections ADD COLUMN last_synced_at DATETIME"))
     db.commit()
 
 
@@ -410,7 +436,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.4-polished-private-beta",
+    version="0.5.5-calendar-places-directions",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -478,7 +504,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.19-phase-five-four-polished-private-beta", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.20-phase-five-five-calendar-places", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1375,6 +1401,33 @@ def enquiry_form_json(row: EnquiryFormConfig, tenant: Tenant) -> dict:
             "public_url": f"{settings.client_url.rstrip('/')}/{tenant.slug}/enquire"}
 
 
+def google_places_config() -> dict:
+    regions = [item.strip().lower() for item in settings.google_places_region_codes.split(",")
+               if item.strip()][:15]
+    return {"configured": bool(settings.google_maps_browser_api_key),
+            "api_key": settings.google_maps_browser_api_key,
+            "region_codes": regions or ["gb"],
+            "manual_entry_available": True}
+
+
+def venue_details_dict(value) -> dict:
+    if value is None:
+        return {}
+    data = value.model_dump() if hasattr(value, "model_dump") else dict(value)
+    return {key: item for key, item in data.items() if item not in {None, ""}}
+
+
+def venue_maps_url(venue: str | None, details: dict | None = None) -> str | None:
+    details = details or {}
+    destination = details.get("formatted_address") or details.get("name") or venue
+    if not destination:
+        return None
+    params = {"api": "1", "destination": str(destination)}
+    if details.get("place_id"):
+        params["destination_place_id"] = str(details["place_id"])
+    return f"https://www.google.com/maps/dir/?{urlencode(params)}"
+
+
 DEFAULT_ENQUIRY_QUESTIONS = (
     ("first_name", "Your name", "short_text", True),
     ("partner_name", "Partner's name", "short_text", False),
@@ -1675,7 +1728,9 @@ def list_enquiries(context=Depends(studio_context), db: Session = Depends(get_db
         result.append({"id": row.id, "first_name": row.first_name, "partner_name": row.partner_name,
              "email": row.email, "phone": row.phone,
              "event_date": row.event_date.isoformat() if row.event_date else None,
-             "venue": row.venue, "package_interest": row.package_interest,
+             "venue": row.venue, "venue_details": row.venue_details or {},
+             "venue_maps_url": venue_maps_url(row.venue, row.venue_details),
+             "package_interest": row.package_interest,
              "message": row.message, "status": row.status,
              "answers": [{"label": item.question_label, "answer": item.answer} for item in answers],
              "created_at": row.created_at.isoformat()})
@@ -1905,7 +1960,9 @@ def create_booking(payload: BookingCreateIn, request: Request,
         Client.id == payload.client_id, Client.tenant_id == membership.tenant_id))
     if not client:
         raise HTTPException(404, "Client not found")
-    row = Booking(tenant_id=membership.tenant_id, **payload.model_dump())
+    row = Booking(tenant_id=membership.tenant_id,
+                  **payload.model_dump(exclude={"venue_details"}),
+                  venue_details=venue_details_dict(payload.venue_details))
     db.add(row)
     db.flush()
     audit(db, "booking_created", "booking", row.id, actor=session.user,
@@ -2062,7 +2119,9 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
         AuditLog.subject_id == booking.id).order_by(AuditLog.created_at.desc()).limit(100)).all()
     result = {"id": booking.id, "title": booking.title,
               "event_date": booking.event_date.isoformat() if booking.event_date else None,
-              "venue": booking.venue, "status": booking.status,
+              "venue": booking.venue, "venue_details": booking.venue_details or {},
+              "venue_maps_url": venue_maps_url(booking.venue, booking.venue_details),
+              "status": booking.status,
               "client": {"id": client.id, "first_name": client.first_name,
                          "last_name": client.last_name, "partner_name": client.partner_name,
                          "email": client.email, "phone": client.phone} if client else None,
@@ -2226,19 +2285,36 @@ def google_access_token(connection: TenantCalendarConnection) -> str:
 
 
 def google_request(method: str, path: str, access_token: str, payload: dict | None = None) -> httpx.Response:
+    params = {"sendUpdates": "none"} if method.upper() in {"POST", "PUT", "PATCH", "DELETE"} else None
     return httpx.request(method, f"{GOOGLE_CALENDAR_API}{path}",
                          headers={"Authorization": f"Bearer {access_token}"},
-                         params={"sendUpdates": "none"}, json=payload,
+                         params=params, json=payload,
                          timeout=settings.google_calendar_timeout_seconds)
+
+
+def google_calendar_choices(connection: TenantCalendarConnection) -> list[dict]:
+    response = google_request("GET", "/users/me/calendarList", google_access_token(connection))
+    response.raise_for_status()
+    return [{"id": item.get("id"), "name": item.get("summary") or item.get("id"),
+             "primary": bool(item.get("primary")), "access_role": item.get("accessRole")}
+            for item in response.json().get("items", [])
+            if item.get("id") and item.get("accessRole") in {"owner", "writer"}]
 
 
 def booking_calendar_payload(booking: Booking) -> dict:
     if not booking.event_date:
         raise RuntimeError("The wedding date has not been set")
     event_id = f"b{token_hash(booking.id)[:40]}"
+    details = booking.venue_details or {}
+    location = details.get("formatted_address") or booking.venue or ""
+    directions = venue_maps_url(booking.venue, details)
+    description = f"Couple: {booking.title}\nVenue: {booking.venue or 'To be confirmed'}"
+    if directions:
+        description += f"\nDirections: {directions}"
+    description += "\n\nManaged by Ivory Digital Booking Studio."
     return {"id": event_id, "summary": f"Wedding — {booking.title}",
-            "description": f"Couple: {booking.title}\nVenue: {booking.venue or 'To be confirmed'}\n\nManaged by Ivory Digital Booking Studio.",
-            "location": booking.venue or "", "start": {"date": booking.event_date.isoformat()},
+            "description": description, "location": location,
+            "start": {"date": booking.event_date.isoformat()},
             "end": {"date": (booking.event_date + timedelta(days=1)).isoformat()},
             "transparency": "opaque", "extendedProperties": {"private": {
                 "ivory_booking_id": booking.id, "tenant_id": booking.tenant_id}}}
@@ -2262,23 +2338,30 @@ def sync_booking_calendar_safely(db: Session, tenant: Tenant, booking: Booking,
         return state
     try:
         access = google_access_token(connection)
-        path = f"/calendars/{quote(connection.calendar_id or 'primary', safe='')}/events/{quote(event_id, safe='')}"
+        calendar_path = f"/calendars/{quote(connection.calendar_id or 'primary', safe='')}/events"
+        path = f"{calendar_path}/{quote(event_id, safe='')}"
         if should_exist:
             response = google_request("PUT", path, access, booking_calendar_payload(booking))
+            if response.status_code == 404:
+                response = google_request("POST", calendar_path, access, booking_calendar_payload(booking))
             if response.status_code >= 400:
                 raise RuntimeError("Google Calendar did not accept the wedding event")
             body = response.json()
+            connection.last_synced_at = utcnow(); connection.last_error = ""
             state = {"status": "synced", "desired_action": None, "event_id": event_id,
                      "calendar_id": connection.calendar_id, "html_link": body.get("htmlLink"),
-                     "last_synced_at": utcnow().isoformat(), "last_error": None}
+                     "last_synced_at": connection.last_synced_at.isoformat(), "last_error": None}
         else:
             response = google_request("DELETE", path, access)
             if response.status_code not in {204, 404, 410}:
                 raise RuntimeError("Google Calendar did not remove the wedding event")
+            connection.last_synced_at = utcnow(); connection.last_error = ""
             state = {"status": "removed", "desired_action": None,
-                     "removed_event_id": event_id, "last_synced_at": utcnow().isoformat(),
+                     "removed_event_id": event_id, "last_synced_at": connection.last_synced_at.isoformat(),
                      "last_error": None}
     except Exception as exc:
+        if connection:
+            connection.last_error = str(exc)[:500]
         state = {**current, "status": "error", "desired_action": desired,
                  "event_id": event_id, "last_attempt_at": utcnow().isoformat(),
                  "last_error": str(exc)[:500]}
@@ -2299,7 +2382,8 @@ def sync_date_block_safely(db: Session, tenant: Tenant, block: TenantDateBlock) 
         return state
     try:
         access = google_access_token(connection)
-        path = f"/calendars/{quote(connection.calendar_id or 'primary', safe='')}/events/{quote(event_id, safe='')}"
+        calendar_path = f"/calendars/{quote(connection.calendar_id or 'primary', safe='')}/events"
+        path = f"{calendar_path}/{quote(event_id, safe='')}"
         if should_exist:
             payload = {"id": event_id, "summary": f"Unavailable — {block.label}",
                        "description": "\n".join(filter(None, [block.notes, "Managed by Ivory Digital Booking Studio."])),
@@ -2307,23 +2391,40 @@ def sync_date_block_safely(db: Session, tenant: Tenant, block: TenantDateBlock) 
                        "end": {"date": (block.end_date + timedelta(days=1)).isoformat()},
                        "transparency": "opaque", "extendedProperties": {"private": {"ivory_date_block_id": block.id}}}
             response = google_request("PUT", path, access, payload)
+            if response.status_code == 404:
+                response = google_request("POST", calendar_path, access, payload)
             if response.status_code >= 400:
                 raise RuntimeError("Google Calendar did not accept the blocked dates")
+            connection.last_synced_at = utcnow(); connection.last_error = ""
             state = {"status": "synced", "desired_action": None, "event_id": event_id,
                      "calendar_id": connection.calendar_id, "html_link": response.json().get("htmlLink"),
-                     "last_synced_at": utcnow().isoformat(), "last_error": None}
+                     "last_synced_at": connection.last_synced_at.isoformat(), "last_error": None}
         else:
             response = google_request("DELETE", path, access)
             if response.status_code not in {204, 404, 410}:
                 raise RuntimeError("Google Calendar did not remove the blocked dates")
+            connection.last_synced_at = utcnow(); connection.last_error = ""
             state = {"status": "removed", "desired_action": None,
-                     "removed_event_id": event_id, "last_synced_at": utcnow().isoformat(), "last_error": None}
+                     "removed_event_id": event_id, "last_synced_at": connection.last_synced_at.isoformat(), "last_error": None}
     except Exception as exc:
+        if connection:
+            connection.last_error = str(exc)[:500]
         state = {**current, "status": "error", "desired_action": desired,
                  "event_id": event_id, "last_attempt_at": utcnow().isoformat(),
                  "last_error": str(exc)[:500]}
     block.calendar_state = state
     return state
+
+
+def sync_tenant_calendar_records(db: Session, tenant: Tenant) -> list[dict]:
+    results = []
+    bookings = db.scalars(select(Booking).where(Booking.tenant_id == tenant.id)).all()
+    for booking in bookings:
+        results.append(sync_booking_calendar_safely(db, tenant, booking, booking_journey(db, booking)))
+    blocks = db.scalars(select(TenantDateBlock).where(TenantDateBlock.tenant_id == tenant.id)).all()
+    for block in blocks:
+        results.append(sync_date_block_safely(db, tenant, block))
+    return results
 
 
 @app.post("/api/studio/enquiries/{enquiry_id}/convert", status_code=201)
@@ -2348,7 +2449,7 @@ def convert_enquiry(enquiry_id: str, payload: EnquiryConvertIn, request: Request
     title = payload.title.strip() or " & ".join(filter(None, [enquiry.first_name, enquiry.partner_name]))
     booking = Booking(tenant_id=tenant.id, client_id=client.id, title=title,
                       event_date=enquiry.event_date, venue=enquiry.venue or None,
-                      status="quote_preparation")
+                      venue_details=enquiry.venue_details or {}, status="quote_preparation")
     db.add(booking); db.flush()
     journey = booking_journey(db, booking); journey.enquiry_id = enquiry.id
     enquiry.status = "converted"
@@ -3036,12 +3137,18 @@ def calendar_status(context=Depends(studio_context), db: Session = Depends(get_d
     blocks = db.scalars(select(TenantDateBlock).where(
         TenantDateBlock.tenant_id == tenant.id,
         TenantDateBlock.archived_at.is_(None)).order_by(TenantDateBlock.start_date)).all()
+    journeys = db.scalars(select(BookingJourney).where(BookingJourney.tenant_id == tenant.id)).all()
+    states = [row.calendar_state or {} for row in journeys] + [row.calendar_state or {} for row in blocks]
     return {"platform_configured": google_configured(),
             "connected": bool(connection and connection.refresh_token_encrypted),
             "google_account_email": connection.google_account_email if connection else "",
             "calendar_id": connection.calendar_id if connection else "primary",
             "calendar_name": connection.calendar_name if connection else "Primary calendar",
+            "last_synced_at": connection.last_synced_at.isoformat() if connection and connection.last_synced_at else None,
             "last_error": connection.last_error if connection else "",
+            "sync_summary": {"synced": sum(item.get("status") == "synced" for item in states),
+                             "pending": sum(item.get("status") == "pending" for item in states),
+                             "errors": sum(item.get("status") == "error" for item in states)},
             "blocks": [{"id": row.id, "start_date": row.start_date.isoformat(),
                         "end_date": row.end_date.isoformat(), "label": row.label,
                         "notes": row.notes, "calendar": row.calendar_state or {}}
@@ -3118,13 +3225,11 @@ def google_calendar_list(context=Depends(studio_context), db: Session = Depends(
     if not connection or not connection.refresh_token_encrypted:
         raise HTTPException(409, "Connect Google Calendar first")
     try:
-        response = google_request("GET", "/users/me/calendarList", google_access_token(connection))
-        response.raise_for_status()
+        choices = google_calendar_choices(connection)
     except Exception as exc:
+        connection.last_error = str(exc)[:500]; db.commit()
         raise HTTPException(422, "Google Calendar could not be reached. Reconnect and try again") from exc
-    return [{"id": item.get("id"), "name": item.get("summary") or item.get("id"),
-             "primary": bool(item.get("primary")), "access_role": item.get("accessRole")}
-            for item in response.json().get("items", []) if item.get("accessRole") in {"owner", "writer"}]
+    return choices
 
 
 @app.put("/api/studio/calendar/settings")
@@ -3134,13 +3239,42 @@ def save_calendar_settings(payload: CalendarSettingsIn, request: Request,
     connection = db.get(TenantCalendarConnection, tenant.id)
     if not connection or not connection.refresh_token_encrypted:
         raise HTTPException(409, "Connect Google Calendar first")
-    connection.calendar_id = payload.calendar_id; connection.calendar_name = payload.calendar_name
+    try:
+        choices = google_calendar_choices(connection)
+    except Exception as exc:
+        connection.last_error = str(exc)[:500]; db.commit()
+        raise HTTPException(422, "Google Calendar could not be reached. Reconnect and try again") from exc
+    selected = next((item for item in choices if item["id"] == payload.calendar_id), None)
+    if not selected:
+        raise HTTPException(422, "Choose a calendar you can add events to")
+    previous_calendar = connection.calendar_id
+    cleanup_failures = 0
+    if previous_calendar and previous_calendar != selected["id"]:
+        access = google_access_token(connection)
+        journeys = db.scalars(select(BookingJourney).where(BookingJourney.tenant_id == tenant.id)).all()
+        blocks = db.scalars(select(TenantDateBlock).where(TenantDateBlock.tenant_id == tenant.id)).all()
+        for owner in [*journeys, *blocks]:
+            state = dict(owner.calendar_state or {})
+            event_id = state.get("event_id")
+            if not event_id or state.get("status") not in {"synced", "error", "pending"}:
+                continue
+            path = f"/calendars/{quote(previous_calendar, safe='')}/events/{quote(event_id, safe='')}"
+            response = google_request("DELETE", path, access)
+            if response.status_code not in {204, 404, 410}:
+                cleanup_failures += 1
+            owner.calendar_state = {**state, "status": "pending", "desired_action": "create_or_update",
+                                    "html_link": None, "last_error": None}
+    connection.calendar_id = selected["id"]; connection.calendar_name = selected["name"]
+    results = sync_tenant_calendar_records(db, tenant)
     mark_onboarding(tenant, "calendar")
     audit(db, "google_calendar_selected", "tenant", tenant.id, actor=session.user,
           tenant_id=tenant.id, request=request,
-          detail={"calendar_id": payload.calendar_id, "calendar_name": payload.calendar_name})
+          detail={"calendar_id": selected["id"], "calendar_name": selected["name"],
+                  "previous_calendar_id": previous_calendar, "records": len(results),
+                  "old_event_cleanup_failures": cleanup_failures})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "calendar_id": selected["id"], "calendar_name": selected["name"],
+            "results": results, "old_event_cleanup_failures": cleanup_failures}
 
 
 @app.post("/api/studio/calendar/disconnect")
@@ -3160,18 +3294,26 @@ def disconnect_calendar(request: Request, session: UserSession = Depends(require
 def sync_all_calendar(request: Request, session: UserSession = Depends(require_csrf),
                       db: Session = Depends(get_db)):
     membership, tenant = studio_write_context(session, db)
-    results = []
-    bookings = db.scalars(select(Booking).where(Booking.tenant_id == tenant.id)).all()
-    for booking in bookings:
-        results.append(sync_booking_calendar_safely(db, tenant, booking, booking_journey(db, booking)))
-    blocks = db.scalars(select(TenantDateBlock).where(TenantDateBlock.tenant_id == tenant.id)).all()
-    for block in blocks:
-        results.append(sync_date_block_safely(db, tenant, block))
+    results = sync_tenant_calendar_records(db, tenant)
     audit(db, "google_calendar_sync_requested", "tenant", tenant.id,
           actor=session.user, tenant_id=tenant.id, request=request,
           detail={"records": len(results)})
     db.commit()
     return {"ok": True, "results": results}
+
+
+@app.post("/api/studio/bookings/{booking_id}/calendar/sync")
+def sync_one_booking_calendar(booking_id: str, request: Request,
+                              session: UserSession = Depends(require_csrf),
+                              db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    booking = studio_booking(db, tenant.id, booking_id)
+    result = sync_booking_calendar_safely(db, tenant, booking, booking_journey(db, booking))
+    audit(db, "booking_calendar_sync_requested", "booking", booking.id,
+          actor=session.user, tenant_id=tenant.id, request=request,
+          detail={"status": result.get("status")})
+    db.commit()
+    return result
 
 
 @app.post("/api/studio/date-blocks", status_code=201)
@@ -3610,19 +3752,24 @@ def update_booking(booking_id: str, payload: BookingUpdateIn, request: Request,
     membership, tenant = studio_write_context(session, db)
     booking = studio_booking(db, tenant.id, booking_id)
     client = db.scalar(select(Client).where(Client.id == booking.client_id, Client.tenant_id == tenant.id))
-    old_date = booking.event_date
+    old_date = booking.event_date; old_venue = booking.venue
     booking.title = payload.title.strip(); booking.event_date = payload.event_date; booking.venue = payload.venue.strip()
+    if payload.venue_details is not None:
+        booking.venue_details = venue_details_dict(payload.venue_details)
+    elif old_venue != booking.venue:
+        booking.venue_details = {}
     client.first_name = payload.first_name.strip(); client.last_name = payload.last_name.strip()
     client.partner_name = payload.partner_name.strip() or None
     client.email = normalise_email(str(payload.email)); client.phone = payload.phone.strip() or None
-    if old_date != booking.event_date:
+    if old_date != booking.event_date or old_venue != booking.venue:
         journey = booking_journey(db, booking)
         journey.calendar_state = {**(journey.calendar_state or {}), "status": "pending", "last_error": "Wedding details changed — sync required."}
         sync_booking_calendar_safely(db, tenant, booking, journey)
     audit(db, "booking_details_updated", "booking", booking.id, actor=session.user,
           tenant_id=tenant.id, request=request,
           detail={"old_date": old_date.isoformat() if old_date else None,
-                  "new_date": booking.event_date.isoformat() if booking.event_date else None})
+                  "new_date": booking.event_date.isoformat() if booking.event_date else None,
+                  "old_venue": old_venue, "new_venue": booking.venue})
     result = journey_json(db, booking, booking_journey(db, booking))
     db.commit()
     return result
@@ -4233,7 +4380,8 @@ def public_enquiry_form(slug: str, db: Session = Depends(get_db)):
         if question.system_key == "package_interest":
             item["options"] = [package.name for package in packages]
         if question.question_type == "venue":
-            item["venue_search"] = {"provider": "google_places", "configured": False,
+            item["venue_search"] = {"provider": "google_places",
+                                    "configured": bool(settings.google_maps_browser_api_key),
                                     "manual_entry_available": True}
         question_data.append(item)
     result = enquiry_form_json(row, tenant)
@@ -4241,7 +4389,8 @@ def public_enquiry_form(slug: str, db: Session = Depends(get_db)):
                    "accent_colour": branding.get("accent_colour") or "#a9782e",
                    "packages": [{"id": item.id, "name": item.name,
                                   "price_pence": item.price_pence} for item in packages],
-                   "questions": question_data})
+                   "questions": question_data,
+                   "google_places": google_places_config()})
     result.pop("public_url", None)
     return result
 
@@ -4286,7 +4435,9 @@ def submit_public_enquiry(slug: str, payload: PublicEnquiryIn, request: Request,
             selected = [part.strip() for part in value.split("|") if part.strip()]
             if any(part not in question.options for part in selected):
                 raise HTTPException(422, f"Choose one of the available answers for: {question.label}")
-    row = Enquiry(tenant_id=tenant.id, **payload.model_dump(exclude={"website", "answers"}))
+    row = Enquiry(tenant_id=tenant.id,
+                  **payload.model_dump(exclude={"website", "answers", "venue_details"}),
+                  venue_details=venue_details_dict(payload.venue_details))
     db.add(row); db.flush()
     for question in questions:
         if question.system_key or not question.is_active:
