@@ -87,6 +87,7 @@ def test_phase55_frontends_and_security_policy_are_wired():
     client = (ROOT / "client/app.js").read_text(encoding="utf-8")
     places = (ROOT / "client/places.js").read_text(encoding="utf-8")
     studio = (ROOT / "studio/v55.js").read_text(encoding="utf-8")
+    studio_v54 = (ROOT / "studio/v54.js").read_text(encoding="utf-8")
     client_html = (ROOT / "client/index.html").read_text(encoding="utf-8")
     studio_html = (ROOT / "studio/index.html").read_text(encoding="utf-8")
     nginx = (ROOT / "client/nginx.conf").read_text(encoding="utf-8")
@@ -94,7 +95,11 @@ def test_phase55_frontends_and_security_policy_are_wired():
     assert "venue_details" in client and "IvoryPlaces" in client
     assert "PlaceAutocompleteElement" in places and "includedRegionCodes" in places
     assert "Use this calendar" in studio and "Get directions" in studio
-    assert "/places.js?v=phase-five-six-one-workflow-layout" in client_html
-    assert "/v55.js?v=phase-five-six-one-workflow-layout" in studio_html
+    assert "/places.js?v=phase-five-six-two-scheduled-emails" in client_html
+    assert "/v55.js?v=phase-five-six-two-scheduled-emails" in studio_html
+    assert "#final-timings" in client
+    assert "questionnaire-final_timings" in client
+    assert "＋ New email" in studio_v54
+    assert "const allowedDays=[120,90,60,30]" in studio_v54
     assert "https://places.googleapis.com" in nginx
     assert "frame-ancestors https:" in nginx

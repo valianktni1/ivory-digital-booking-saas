@@ -31,6 +31,7 @@ def merge_message(value: str, tenant: Tenant, booking: Booking | None,
         "wedding_date": booking.event_date.strftime("%A %d %B %Y") if booking and booking.event_date else "",
         "venue": booking.venue if booking else "",
         "client_portal_link": extra.get("client_portal_link", ""),
+        "final_timings_link": extra.get("final_timings_link", ""),
     }
     result = value or ""
     for key, replacement in replacements.items():

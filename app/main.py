@@ -201,6 +201,14 @@ DEFAULT_HELP_ARTICLES = (
         "action_label": "Open emails & workflow", "action_route": "workflow", "sort_order": 100,
     },
     {
+        "slug": "schedule-wedding-check-in-emails", "title": "How do I schedule wedding check-in emails?",
+        "category": "Emails & workflow", "contexts": ["workflow", "weddings"], "tour_key": "workflow",
+        "keywords": ["check in", "scheduled email", "120 days", "90 days", "60 days", "30 days", "final timings"],
+        "summary": "Create separate emails for 120, 90, 60 or 30 days before the wedding.",
+        "body": "Open Emails & workflow and choose New email. Pick 120, 90, 60 or 30 days before the wedding, write the message or start from a saved template, then choose whether it waits for review or sends automatically.\n\nYou can add several emails — for example one at 120 days, another at 60 days and another at 30 days. The Final Timings form option is available only for the 30-day email. It adds a secure button that opens that couple's actual Final Timings questionnaire.",
+        "action_label": "Open emails & workflow", "action_route": "workflow", "sort_order": 105,
+    },
+    {
         "slug": "pause-one-follow-up", "title": "How do I pause one follow-up for one couple?",
         "category": "Emails & workflow", "contexts": ["weddings", "workflow"],
         "keywords": ["pause follow up", "stop first email", "one couple", "individual step", "resume reminder"],
@@ -381,24 +389,55 @@ DEFAULT_EMAIL_TEMPLATES = (
             "If you need to check anything with me, just reply here."
         ),
     },
+    {
+        "name": "Wedding planning check-in",
+        "category": "Wedding check-in",
+        "subject": "A little check-in before your wedding",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "I just wanted to check in and say hello as your wedding gets closer. "
+            "I am still here, everything is safely in the diary, and I hope all the planning is going well.\n\n"
+            "If there is anything you would like to ask or update me about, simply reply to this email."
+        ),
+    },
+    {
+        "name": "Final timings request",
+        "category": "Final timings",
+        "subject": "Your final wedding timings",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "Your wedding is getting close, so it is time to complete your final timings form. "
+            "Please use the secure button below when you are ready.\n\n"
+            "{{final_timings_link}}\n\n"
+            "If anything is still being decided, fill in what you know and you can return to update it later."
+        ),
+    },
 )
 
 
 def ensure_starter_email_templates(db: Session, tenant: Tenant) -> None:
     onboarding = dict(tenant.onboarding or {})
-    if int(onboarding.get("email_templates_seed_version") or 0) >= 2:
+    current_version = int(onboarding.get("email_templates_seed_version") or 0)
+    if current_version >= 3:
         return
     existing_names = set(db.scalars(select(EmailTemplate.name).where(
         EmailTemplate.tenant_id == tenant.id)).all())
     first_seed = not onboarding.get("email_templates_seeded") and not existing_names
-    starter_rows = (DEFAULT_EMAIL_TEMPLATES if first_seed else
-                    tuple(row for row in DEFAULT_EMAIL_TEMPLATES
-                          if row["name"] == "Contract signed by both parties"))
+    if first_seed:
+        starter_rows = DEFAULT_EMAIL_TEMPLATES
+    else:
+        upgrade_names = set()
+        if current_version < 2:
+            upgrade_names.add("Contract signed by both parties")
+        if current_version < 3:
+            upgrade_names.update({"Wedding planning check-in", "Final timings request"})
+        starter_rows = tuple(row for row in DEFAULT_EMAIL_TEMPLATES
+                             if row["name"] in upgrade_names)
     for values in starter_rows:
         if values["name"] not in existing_names:
             db.add(EmailTemplate(tenant_id=tenant.id, is_active=True, **values))
     onboarding["email_templates_seeded"] = True
-    onboarding["email_templates_seed_version"] = 2
+    onboarding["email_templates_seed_version"] = 3
     tenant.onboarding = onboarding
     db.flush()
 
@@ -585,7 +624,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6.1-workflow-layout",
+    version="0.5.6.2-scheduled-emails",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -653,7 +692,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.21-phase-five-six-one-workflow-layout", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.21-phase-five-six-two-scheduled-emails", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1499,7 +1538,7 @@ STARTER_WORKFLOW_STEPS = (
     ("Balance reminder", "balance_due", "before", 7, "days", "email", "Your wedding balance", "Hi {{couple_first_name}},\n\nJust a friendly reminder that your remaining wedding balance is due soon.\n\n{{business_name}}"),
     ("Final balance reminder", "balance_due", "before", 1, "days", "email", "Wedding balance due tomorrow", "Hi {{couple_first_name}},\n\nA quick reminder that your remaining wedding balance is due tomorrow.\n\n{{business_name}}"),
     ("Four-month check-in", "wedding_date", "before", 120, "days", "manual_task", "", ""),
-    ("Send final timings form", "wedding_date", "before", 30, "days", "email", "Your final wedding timings", "Hi {{couple_first_name}},\n\nYour wedding is getting close. Please complete the final timings form in your private client area when you are ready.\n\n{{business_name}}"),
+    ("Send final timings form", "wedding_date", "before", 30, "days", "email", "Your final wedding timings", "Hi {{couple_first_name}},\n\nYour wedding is getting close. Please complete the final timings form in your private client area when you are ready.\n\n{{final_timings_link}}\n\n{{business_name}}"),
 )
 
 
@@ -1514,6 +1553,16 @@ def ensure_starter_workflow(db: Session, tenant: Tenant) -> None:
     existing = db.scalar(select(func.count(WorkflowStep.id)).where(
         WorkflowStep.tenant_id == tenant.id, WorkflowStep.workflow_id == workflow.id)) or 0
     if existing:
+        final_step = db.scalar(select(WorkflowStep).where(
+            WorkflowStep.tenant_id == tenant.id,
+            WorkflowStep.workflow_id == workflow.id,
+            WorkflowStep.name == "Send final timings form").limit(1))
+        legacy_body = ("Hi {{couple_first_name}},\n\nYour wedding is getting close. "
+                       "Please complete the final timings form in your private client area when you are ready.\n\n"
+                       "{{business_name}}")
+        if final_step and final_step.message_body == legacy_body:
+            final_step.message_body = legacy_body.replace(
+                "\n\n{{business_name}}", "\n\n{{final_timings_link}}\n\n{{business_name}}")
         return
     workflow.is_active = True
     for order, (name, trigger, direction, offset, unit, action, subject, message) in enumerate(STARTER_WORKFLOW_STEPS):
@@ -1547,6 +1596,22 @@ def validate_add_on_packages(db: Session, tenant_id: str, payload: AddOnIn) -> N
         ServicePackage.id.in_(wanted))).all())
     if found != wanted:
         raise HTTPException(422, "One or more eligible packages are not available in this studio")
+
+
+def validate_workflow_step(payload: WorkflowStepIn) -> None:
+    if "{{final_timings_link}}" not in payload.message_body:
+        return
+    is_thirty_day_email = (
+        payload.action_type == "email"
+        and payload.trigger_event == "wedding_date"
+        and payload.timing_direction == "before"
+        and payload.offset_unit == "days"
+        and payload.offset_value == 30
+    )
+    if not is_thirty_day_email:
+        raise HTTPException(
+            422, "The Final Timings form can only be included in an email 30 days before the wedding"
+        )
 
 
 def mark_onboarding(tenant: Tenant, key: str) -> None:
@@ -1818,6 +1883,7 @@ def update_workflow(workflow_id: str, payload: WorkflowIn, request: Request,
 @app.post("/api/studio/workflows/{workflow_id}/steps", status_code=201)
 def create_workflow_step(workflow_id: str, payload: WorkflowStepIn, request: Request,
                          session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    validate_workflow_step(payload)
     membership, tenant = studio_write_context(session, db)
     workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id,
                          Workflow.tenant_id == membership.tenant_id))
@@ -1839,6 +1905,7 @@ def create_workflow_step(workflow_id: str, payload: WorkflowStepIn, request: Req
 def update_workflow_step(workflow_id: str, step_id: str, payload: WorkflowStepIn,
                          request: Request, session: UserSession = Depends(require_csrf),
                          db: Session = Depends(get_db)):
+    validate_workflow_step(payload)
     membership, tenant = studio_write_context(session, db)
     workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id,
                          Workflow.tenant_id == membership.tenant_id))
@@ -2424,13 +2491,22 @@ def trigger_workflow(db: Session, tenant: Tenant, booking: Booking,
             WorkflowAction.trigger_key == trigger))
         if exists:
             continue
+        action_payload = {"name": step.name, "action_type": step.action_type,
+                          "subject": step.subject, "message_body": step.message_body,
+                          "task_title": step.task_title,
+                          "resume_status": resume_status}
+        if step.action_type == "email" and "{{final_timings_link}}" in step.message_body:
+            final_link = f"{portal_url(journey)}#final-timings"
+            action_payload.update({"client_portal_link": final_link,
+                                   "final_timings_link": final_link,
+                                   "action_label": "Complete your final timings"})
+        elif step.action_type == "email" and "{{client_portal_link}}" in step.message_body:
+            action_payload.update({"client_portal_link": portal_url(journey),
+                                   "action_label": "Open your private booking"})
         db.add(WorkflowAction(tenant_id=tenant.id, booking_id=booking.id,
                               step_id=step.id, trigger_key=trigger, mode=mode,
                               due_at=due, status=status_value,
-                              payload={"name": step.name, "action_type": step.action_type,
-                                       "subject": step.subject, "message_body": step.message_body,
-                                       "task_title": step.task_title,
-                                       "resume_status": resume_status}))
+                              payload=action_payload))
         db.flush()
 
 

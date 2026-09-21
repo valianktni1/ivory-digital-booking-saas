@@ -1,0 +1,47 @@
+PHASE 5.6.2 COMPLETE DUMMY JOURNEY
+
+Release check
+
+[ ] Confirm /api/health says phase-five-six-two-scheduled-emails.
+[ ] Hard-refresh Studio once and confirm Email templates appears under Setup.
+[ ] Confirm Emails & workflow shows New email, not New workflow.
+
+Templates, branding and scheduled emails
+
+[ ] Open Business & brand and upload a temporary or real studio logo.
+[ ] Confirm the logo preview appears on the same page.
+[ ] Open Email templates and confirm eight editable starter templates appear.
+[ ] Open Wedding planning check-in, edit a harmless word, save it and reopen it.
+[ ] Open Emails & workflow and choose New email.
+[ ] Confirm the only timing choices are 120, 90, 60 and 30 days before.
+[ ] Create a 120-day check-in and leave Send automatically unticked.
+[ ] Create a 60-day check-in and tick Send automatically.
+[ ] Confirm Include the Final Timings form is unavailable at 120 and 60 days.
+[ ] Create a 30-day email from the Final timings request template.
+[ ] Confirm Include the Final Timings form is selected at 30 days.
+[ ] Reopen all three emails and confirm their wording and sending mode remain.
+
+Enquiry and quote
+
+[ ] Submit a new dummy enquiry using an inbox you can access.
+[ ] Open it in Enquiries and confirm it does not appear in Weddings yet.
+[ ] Prepare a quote with at least one package, one Optional extra and one
+    Compulsory extra.
+[ ] Save the draft and confirm no email is sent.
+[ ] Review and send the quote; confirm the logo and large quote button appear.
+[ ] Open the secure quote, choose a package and accept it.
+[ ] Confirm the enquiry now says Booked and appears in Weddings.
+
+Forms, agreement and Final Timings link
+
+[ ] Confirm Booking Questionnaire and Final Wedding Timings are available in
+    the private portal after quote acceptance.
+[ ] Confirm the active agreement is available without manually issuing it.
+[ ] Sign it and confirm the system countersigns and emails the completed PDF.
+[ ] Temporarily edit the dummy wedding date or use the review screen to inspect
+    the prepared 30-day Final Timings email.
+[ ] Confirm its large button says Complete your final timings.
+[ ] Open the button and confirm the private portal scrolls directly to the
+    Final Wedding Timings questionnaire.
+
+Do not use a real couple until every required check above passes.

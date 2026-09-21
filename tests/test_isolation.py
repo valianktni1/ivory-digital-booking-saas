@@ -1,5 +1,5 @@
 from urllib.parse import parse_qs, urlparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pyotp
 import pytest
@@ -248,6 +248,43 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         }
 
         workflow = alpha_client.get("/api/studio/workflows").json()[0]
+        final_timings_step = next(
+            item for item in workflow["steps"] if item["name"] == "Send final timings form"
+        )
+        assert final_timings_step["offset_value"] == 30
+        assert final_timings_step["trigger_event"] == "wedding_date"
+        assert "{{final_timings_link}}" in final_timings_step["message_body"]
+        final_timings_mode = alpha_client.put(
+            f"/api/studio/workflow-steps/{final_timings_step['id']}/mode",
+            headers=csrf(alpha_client),
+            json={"mode": "automatic", "apply_to_existing": False},
+        )
+        assert final_timings_mode.status_code == 200, final_timings_mode.text
+        check_in = alpha_client.post(
+            f"/api/studio/workflows/{workflow['id']}/steps", headers=csrf(alpha_client), json={
+                "name": "90-day wedding check-in", "trigger_event": "wedding_date",
+                "timing_direction": "before", "offset_value": 90, "offset_unit": "days",
+                "action_type": "email", "subject": "A little wedding check-in",
+                "message_body": "Hi {{couple_first_name}}, I am still here and hope planning is going well.",
+                "is_paused": False,
+            },
+        )
+        assert check_in.status_code == 201, check_in.text
+        too_early_final_timings = alpha_client.post(
+            f"/api/studio/workflows/{workflow['id']}/steps", headers=csrf(alpha_client), json={
+                "name": "Too-early final timings", "trigger_event": "wedding_date",
+                "timing_direction": "before", "offset_value": 60, "offset_unit": "days",
+                "action_type": "email", "subject": "Final timings",
+                "message_body": "Please complete this now: {{final_timings_link}}",
+            },
+        )
+        assert too_early_final_timings.status_code == 422
+        check_in_mode = alpha_client.put(
+            f"/api/studio/workflow-steps/{check_in.json()['id']}/mode",
+            headers=csrf(alpha_client),
+            json={"mode": "automatic", "apply_to_existing": False},
+        )
+        assert check_in_mode.status_code == 200, check_in_mode.text
         step = alpha_client.post(
             f"/api/studio/workflows/{workflow['id']}/steps", headers=csrf(alpha_client), json={
                 "name": "Check they received the quote", "trigger_event": "quote_sent",
@@ -450,6 +487,22 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
             f"/api/studio/bookings/{booking_id}/journey"
         ).json()
         assert accepted_journey["contract"]["title"] == "Wedding photography agreement"
+        scheduled_by_step = {
+            action["step_id"]: action for action in accepted_journey["workflow_actions"]
+        }
+        final_action = scheduled_by_step[final_timings_step["id"]]
+        final_link = sent_quote.json()["portal_url"] + "#final-timings"
+        assert final_action["mode"] == "automatic"
+        assert final_action["status"] == "paused"
+        assert final_action["due_at"].startswith("2027-07-15T09:00:00")
+        assert final_action["payload"]["final_timings_link"] == final_link
+        assert final_action["payload"]["client_portal_link"] == final_link
+        assert final_action["payload"]["action_label"] == "Complete your final timings"
+        check_in_action = scheduled_by_step[check_in.json()["id"]]
+        expected_check_in = datetime(2027, 8, 14, 9, tzinfo=timezone.utc) - timedelta(days=90)
+        assert check_in_action["mode"] == "automatic"
+        assert check_in_action["status"] == "paused"
+        assert check_in_action["due_at"].startswith(expected_check_in.isoformat().replace("+00:00", ""))
         accepted_portal = manager.get(f"/api/public/portal/{portal_token}").json()
         assert {row["form_type"] for row in accepted_portal["available_questionnaires"]} == {
             "booking", "final_timings"
@@ -721,12 +774,13 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert edited_template.status_code == 200, edited_template.text
         assert edited_template.json()["subject"] == "Your venue information"
         alpha_templates = alpha_client.get("/api/studio/email-templates").json()
-        assert len(alpha_templates) == 7
+        assert len(alpha_templates) == 9
         assert {row["name"] for row in alpha_templates} >= {
-            "Wedding quote", "Contract signed by both parties", "Venue information"
+            "Wedding quote", "Contract signed by both parties", "Wedding planning check-in",
+            "Final timings request", "Venue information"
         }
         beta_templates = beta_client.get("/api/studio/email-templates").json()
-        assert len(beta_templates) == 6
+        assert len(beta_templates) == 8
         branding = alpha_client.put("/api/studio/email-branding", headers=csrf(alpha_client), json={
             "signoff": "All the best", "signature_name": "Alex Alpha",
             "signature_role": "Wedding photographer", "telephone": "07000000001",
