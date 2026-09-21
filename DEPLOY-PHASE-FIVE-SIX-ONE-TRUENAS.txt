@@ -1,0 +1,49 @@
+PHASE 5.6.1 — COMPLETE ENQUIRY-TO-BOOKING WORKFLOW + LAYOUT
+
+1. Copy this full release into your local ivory-digital-booking repository.
+   In GitHub Desktop, review the changes, commit them, and PUSH the commit.
+   Do not continue until GitHub shows the new commit on the remote repository.
+
+2. Run these commands in the TrueNAS shell.
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+
+PHASE561_BACKUP="/mnt/apps/dockge/data/tenantsbookingsystem2026/ivory-booking-before-phase561-$(date +%Y%m%d-%H%M%S).dump"
+
+sudo docker exec tenantsbookingsystem2026-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$PHASE561_BACKUP"
+
+sudo ls -lh "$PHASE561_BACKUP"
+
+sudo git pull --ff-only
+
+sudo docker compose -f compose.yaml build --no-cache backend worker studio client
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate backend
+
+for attempt in {1..30}; do
+  backend_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-backend 2>/dev/null || true)
+  echo "Backend: $backend_health"
+  test "$backend_health" = "healthy" && break
+  sleep 2
+done
+
+test "$backend_health" = "healthy"
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate worker studio client
+
+sudo docker compose -f compose.yaml ps
+
+curl -fsS https://studio.ivorydigital.uk/api/health && echo
+
+curl -fsS https://studio.ivorydigital.uk/ | grep -o 'phase-five-six-one-workflow-layout' | head -1
+
+curl -fsS https://client.ivorydigital.uk/ | grep -o 'phase-five-six-one-workflow-layout' | head -1
+
+Expected final checks:
+
+{"status":"ok","build":"2026.09.21-phase-five-six-one-workflow-layout","service":"ivory-booking-saas"}
+phase-five-six-one-workflow-layout
+phase-five-six-one-workflow-layout
+
+3. Run CHECKLIST-PHASE-FIVE-SIX-ONE.txt using a dummy couple before using a
+   real enquiry. Keep the database backup until the full journey passes.

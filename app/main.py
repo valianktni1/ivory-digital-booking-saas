@@ -172,8 +172,8 @@ DEFAULT_HELP_ARTICLES = (
         "slug": "issue-and-sign-contract", "title": "How do contracts work?",
         "category": "Contracts & forms", "contexts": ["documents", "weddings"], "tour_key": "documents",
         "keywords": ["contract", "agreement", "sign", "signature", "countersign", "terms"],
-        "summary": "The couple signs first, then the photographer countersigns.",
-        "body": "Create and save your active agreement under Contracts & forms. Inside a wedding, choose Issue active agreement. The couple reads and signs the fixed snapshot in their secure portal.\n\nWhen their signature arrives, Studio shows that yours is required. Countersign it there, then either side can download the completed PDF.",
+        "summary": "The active agreement is issued when a quote is accepted, then completed automatically when the couple signs.",
+        "body": "Create and save your active agreement under Contracts & forms. When a couple accepts their quote, Studio adds a fixed snapshot of that agreement to their private booking area alongside their accepted package, extras and questionnaires.\n\nThe couple reads and signs it once. Studio then countersigns automatically using your saved business signature name and emails the couple a completed PDF copy. Both sides can also download the completed PDF from the wedding workspace or private booking area.",
         "action_label": "Open contracts & forms", "action_route": "documents", "sort_order": 80,
     },
     {
@@ -307,6 +307,102 @@ DEFAULT_HELP_ARTICLES = (
 )
 
 
+DEFAULT_EMAIL_TEMPLATES = (
+    {
+        "name": "Wedding quote",
+        "category": "Quote",
+        "subject": "Your wedding quote from {{business_name}}",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "Thank you for getting in touch about your wedding on {{wedding_date}} at {{venue}}. "
+            "I have put together your personal quote and package choices.\n\n"
+            "Use the secure button below to compare the packages, choose any extras and accept "
+            "the option that feels right for you both.\n\n"
+            "{{client_portal_link}}\n\n"
+            "If you have any questions at all, just reply to this email."
+        ),
+    },
+    {
+        "name": "Personal enquiry reply",
+        "category": "Enquiry",
+        "subject": "Thank you for your wedding enquiry",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "Thank you for getting in touch about your wedding on {{wedding_date}} at {{venue}}. "
+            "It sounds lovely. I am going through the details personally and will come back to you shortly.\n\n"
+            "If there is anything else you would like me to know, simply reply here."
+        ),
+    },
+    {
+        "name": "Check the quote arrived",
+        "category": "Quote follow-up",
+        "subject": "Just checking your wedding quote arrived",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "I just wanted to make sure your wedding quote arrived safely. There is no pressure at all - "
+            "I simply did not want it to be missed.\n\n"
+            "Your secure quote is here:\n{{client_portal_link}}\n\n"
+            "Please feel free to ask me anything."
+        ),
+    },
+    {
+        "name": "Booking confirmed",
+        "category": "Booking",
+        "subject": "Your wedding booking is confirmed",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "Thank you - your wedding booking for {{wedding_date}} at {{venue}} is now confirmed. "
+            "I am genuinely looking forward to being part of it.\n\n"
+            "You can return to your private booking area whenever you need it:\n"
+            "{{client_portal_link}}"
+        ),
+    },
+    {
+        "name": "Contract signed by both parties",
+        "category": "Contract",
+        "subject": "Your completed wedding agreement from {{business_name}}",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "Thank you. Your wedding agreement has now been signed by you and countersigned "
+            "automatically on behalf of {{business_name}}.\n\n"
+            "A completed PDF copy is attached to this email for your records. You can also return "
+            "to your private booking area at any time using the secure button below.\n\n"
+            "{{client_portal_link}}"
+        ),
+    },
+    {
+        "name": "Friendly balance reminder",
+        "category": "Payment",
+        "subject": "A quick reminder about your wedding balance",
+        "body": (
+            "Hi {{couple_first_name}},\n\n"
+            "Just a friendly reminder that the remaining balance for your wedding on {{wedding_date}} "
+            "is due soon. If you have already paid it, thank you and please ignore this message.\n\n"
+            "If you need to check anything with me, just reply here."
+        ),
+    },
+)
+
+
+def ensure_starter_email_templates(db: Session, tenant: Tenant) -> None:
+    onboarding = dict(tenant.onboarding or {})
+    if int(onboarding.get("email_templates_seed_version") or 0) >= 2:
+        return
+    existing_names = set(db.scalars(select(EmailTemplate.name).where(
+        EmailTemplate.tenant_id == tenant.id)).all())
+    first_seed = not onboarding.get("email_templates_seeded") and not existing_names
+    starter_rows = (DEFAULT_EMAIL_TEMPLATES if first_seed else
+                    tuple(row for row in DEFAULT_EMAIL_TEMPLATES
+                          if row["name"] == "Contract signed by both parties"))
+    for values in starter_rows:
+        if values["name"] not in existing_names:
+            db.add(EmailTemplate(tenant_id=tenant.id, is_active=True, **values))
+    onboarding["email_templates_seeded"] = True
+    onboarding["email_templates_seed_version"] = 2
+    tenant.onboarding = onboarding
+    db.flush()
+
+
 def ensure_help_catalog(db: Session) -> None:
     existing_rows = {row.slug: row for row in db.scalars(select(HelpArticle)).all()}
     added = False
@@ -330,6 +426,13 @@ def ensure_help_catalog(db: Session) -> None:
         calendar_help.summary = current["summary"]
         calendar_help.body = current["body"]
         calendar_help.keywords = current["keywords"]
+    contract_help = existing_rows.get("issue-and-sign-contract")
+    if contract_help and "photographer countersigns" in contract_help.summary.lower():
+        current = next(item for item in DEFAULT_HELP_ARTICLES if item["slug"] == contract_help.slug)
+        contract_help.summary = current["summary"]
+        contract_help.body = current["body"]
+        contract_help.keywords = current["keywords"]
+        added = True
         added = True
     for slug, marker in (("turn-enquiry-into-wedding", "start client journey"),
                          ("create-and-send-quote", "prepare quote link")):
@@ -482,7 +585,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6-enquiries-quotes",
+    version="0.5.6.1-workflow-layout",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -550,7 +653,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.21-phase-five-six-enquiries-quotes", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.21-phase-five-six-one-workflow-layout", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -2153,6 +2256,50 @@ def contract_json(row: BookingContract | None) -> dict | None:
             "supplier_signed_at": row.supplier_signed_at.isoformat() if row.supplier_signed_at else None}
 
 
+def issue_active_contract_snapshot(db: Session, tenant: Tenant,
+                                   booking: Booking) -> BookingContract | None:
+    """Attach the latest active agreement without inventing legal wording."""
+    template = db.scalar(select(TenantContractTemplate).where(
+        TenantContractTemplate.tenant_id == tenant.id,
+        TenantContractTemplate.is_active.is_(True)
+    ).order_by(TenantContractTemplate.updated_at.desc()).limit(1))
+    if not template:
+        return None
+    row = db.scalar(select(BookingContract).where(
+        BookingContract.tenant_id == tenant.id,
+        BookingContract.booking_id == booking.id))
+    if row and (row.client_signed_at or row.supplier_signed_at):
+        return row
+    if row:
+        row.template_id = template.id
+        row.title = template.name
+        row.version = template.version
+        row.body_snapshot = template.body
+    else:
+        row = BookingContract(
+            tenant_id=tenant.id, booking_id=booking.id,
+            template_id=template.id, title=template.name,
+            version=template.version, body_snapshot=template.body,
+        )
+        db.add(row)
+    db.flush()
+    return row
+
+
+def automatic_supplier_name(db: Session, tenant: Tenant) -> str:
+    branding = db.get(TenantEmailBranding, tenant.id)
+    if branding and (branding.signature_name or "").strip():
+        return branding.signature_name.strip()
+    owner = db.scalar(select(User).join(
+        Membership, Membership.user_id == User.id
+    ).where(
+        Membership.tenant_id == tenant.id,
+        Membership.role == MembershipRole.OWNER,
+        User.is_active.is_(True),
+    ).order_by(Membership.created_at).limit(1))
+    return owner.full_name.strip() if owner and owner.full_name.strip() else tenant.display_name
+
+
 def questionnaire_json(row: QuestionnaireTemplate, submission: QuestionnaireSubmission | None = None) -> dict:
     return {"id": row.id, "form_type": row.form_type, "name": row.name,
             "introduction": row.introduction, "questions": row.questions or [],
@@ -2626,6 +2773,8 @@ def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
         PackageAddOn.is_active.is_(True))).all()
     allowed_addons = {item.id: item for item in add_on_rows}
     selected_ids = set(payload.add_on_ids)
+    required_ids = set(payload.required_add_on_ids)
+    selected_ids.update(required_ids)
     offered_packages = {item.id for item in package_rows}
     selected_ids.update(item.id for item in add_on_rows
                         if item.selection_mode == "mandatory"
@@ -2633,13 +2782,27 @@ def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
                              or bool(offered_packages & set(item.eligible_package_ids))))
     if any(item_id not in allowed_addons for item_id in selected_ids):
         raise HTTPException(422, "One of the selected add-ons is no longer available")
+    if not required_ids.issubset(selected_ids):
+        raise HTTPException(422, "A compulsory extra must also be included in the quote")
     incompatible = [allowed_addons[item_id].name for item_id in selected_ids
                     if allowed_addons[item_id].eligible_package_ids
                     and not (offered_packages & set(allowed_addons[item_id].eligible_package_ids))]
     if incompatible:
         raise HTTPException(422, f"{incompatible[0]} is not available with any offered package")
+    add_on_snapshots = []
+    for item in add_on_rows:
+        if item.id not in selected_ids:
+            continue
+        snapshot = add_on_json(item)
+        if item.id in required_ids or item.selection_mode == "mandatory":
+            snapshot["selection_mode"] = "mandatory"
+            snapshot["required_for_quote"] = True
+        else:
+            snapshot["selection_mode"] = "optional"
+            snapshot["required_for_quote"] = False
+        add_on_snapshots.append(snapshot)
     return {"status": "draft", "packages": [package_json(item) for item in package_rows],
-            "add_ons": [add_on_json(item) for item in add_on_rows if item.id in selected_ids],
+            "add_ons": add_on_snapshots,
             "custom_items": payload.custom_items, "message": payload.message,
             "expires_on": payload.expires_on.isoformat() if payload.expires_on else None,
             "updated_at": utcnow().isoformat()}
@@ -2672,6 +2835,7 @@ def cancel_open_enquiry_actions(db: Session, tenant_id: str, enquiry_id: str,
 
 def quote_email_copy(db: Session, tenant: Tenant, booking: Booking,
                      journey: BookingJourney) -> dict:
+    ensure_starter_email_templates(db, tenant)
     client = db.scalar(select(Client).where(
         Client.id == booking.client_id, Client.tenant_id == tenant.id))
     template = db.scalar(select(EmailTemplate).where(
@@ -2758,7 +2922,7 @@ def send_quote(booking_id: str, request: Request, payload: QuoteEmailSendIn | No
         message = send_tenant_email(
             db, tenant, mailbox, client.email, subject, body,
             booking=booking, client=client, template_id=copy["template_id"],
-            extra={"client_portal_link": link},
+            extra={"client_portal_link": link, "action_label": "Open your wedding quote"},
         )
     except Exception as exc:
         audit(db, "quote_email_failed", "booking", booking.id, actor=session.user,
@@ -2911,6 +3075,7 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
     db.add(invoice); db.flush(); booking.status = "quote_accepted"
     booking.is_provisional = False
     booking.promoted_at = booking.promoted_at or utcnow()
+    contract = issue_active_contract_snapshot(db, tenant, booking)
     enquiry = enquiry_for_journey(db, journey)
     if enquiry:
         enquiry.status = "booked"
@@ -2931,15 +3096,28 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
                          datetime(wedding_day.year, wedding_day.month, wedding_day.day,
                                   9, 0, tzinfo=timezone.utc))
     audit(db, "quote_accepted", "booking", booking.id, tenant_id=tenant.id,
-          request=request, detail={"invoice_number": number, "total_pence": total})
+          request=request, detail={"invoice_number": number, "total_pence": total,
+                                   "contract_issued": bool(contract)})
+    if contract:
+        audit(db, "contract_issued_automatically", "contract", contract.id,
+              tenant_id=tenant.id, request=request,
+              detail={"template_id": contract.template_id, "version": contract.version})
+    else:
+        create_studio_notification(
+            db, tenant, booking, "contract_template_missing",
+            f"Add an agreement for {booking.title}",
+            "Their quote is accepted, but there is no active agreement template. Save one in Contracts & forms, then issue it from this wedding.",
+        )
     create_studio_notification(
         db, tenant, booking, "quote_accepted",
         f"{booking.title} accepted their quote",
-        f"Their package has been accepted and invoice {number} was created. Look out for the booking fee.",
+        (f"Their package has been accepted, invoice {number} was created and their agreement is ready to sign."
+         if contract else
+         f"Their package has been accepted and invoice {number} was created. Add an active agreement template before asking them to sign."),
     )
     result = invoice_json(invoice, db)
     db.commit()
-    return {"ok": True, "invoice": result,
+    return {"ok": True, "invoice": result, "contract_ready": bool(contract),
             "message": "Your package has been accepted safely."}
 
 
@@ -3151,19 +3329,63 @@ def sign_public_contract(raw_token: str, payload: ContractSignIn, request: Reque
         raise HTTPException(404, "Your contract is not ready yet")
     if row.client_signed_at:
         raise HTTPException(409, "This contract has already been signed")
-    row.client_name = payload.full_name.strip(); row.client_signed_at = utcnow()
+    signed_at = utcnow()
+    row.client_name = payload.full_name.strip(); row.client_signed_at = signed_at
     row.client_ip = client_ip(request) or ""
+    row.supplier_name = automatic_supplier_name(db, tenant)
+    row.supplier_signed_at = signed_at
     trigger_workflow(db, tenant, booking, "contract_signed")
     trigger_workflow(db, tenant, booking, "agreement_signed")
     audit(db, "contract_client_signed", "contract", row.id, tenant_id=tenant.id,
           request=request, detail={"signatory": row.client_name})
+    audit(db, "contract_supplier_signed_automatically", "contract", row.id,
+          tenant_id=tenant.id, request=request, detail={"signatory": row.supplier_name})
+    ensure_starter_email_templates(db, tenant)
+    client = db.scalar(select(Client).where(
+        Client.id == booking.client_id, Client.tenant_id == tenant.id))
+    mailbox = db.get(MailboxSetting, tenant.id)
+    delivery = "not_configured"
+    if client and mailbox and mailbox.smtp_verified_at and mailbox.smtp_password_encrypted:
+        template = db.scalar(select(EmailTemplate).where(
+            EmailTemplate.tenant_id == tenant.id,
+            EmailTemplate.is_active.is_(True),
+            or_(func.lower(EmailTemplate.category) == "contract",
+                func.lower(EmailTemplate.name).like("%contract%signed%"))
+        ).order_by(EmailTemplate.updated_at.desc()).limit(1))
+        subject = template.subject if template else "Your completed wedding agreement from {{business_name}}"
+        body = template.body if template else (
+            "Hi {{couple_first_name}},\n\nYour wedding agreement has now been signed by both parties. "
+            "A completed PDF copy is attached for your records.\n\n{{client_portal_link}}"
+        )
+        filename = f"{safe_document_name(booking.title)}-signed-agreement.pdf"
+        completed_pdf = contract_pdf(tenant, booking, row).body
+        try:
+            message = send_tenant_email(
+                db, tenant, mailbox, client.email, subject, body,
+                booking=booking, client=client,
+                template_id=template.id if template else None,
+                extra={"client_portal_link": portal_url(journey),
+                       "action_label": "Open your signed agreement"},
+                attachments=[(filename, completed_pdf, "application/pdf")],
+            )
+            delivery = "sent"
+            audit(db, "completed_contract_emailed", "contract", row.id,
+                  tenant_id=tenant.id, request=request,
+                  detail={"recipient": client.email, "email_message_id": message.id})
+        except Exception as exc:
+            delivery = "failed"
+            audit(db, "completed_contract_email_failed", "contract", row.id,
+                  tenant_id=tenant.id, request=request,
+                  detail={"recipient": client.email, "error": str(exc)[:500]})
     create_studio_notification(
         db, tenant, booking, "contract_signed",
-        f"{booking.title} signed their agreement",
-        "The couple's signature is safely recorded. The agreement is ready for your countersignature.",
+        f"{booking.title}'s agreement is complete",
+        ("The couple signed, Studio countersigned automatically and their completed PDF was emailed."
+         if delivery == "sent" else
+         "The couple signed and Studio countersigned automatically. Their PDF email could not be sent, so download it from the wedding and send it manually."),
     )
     db.commit()
-    return contract_json(row)
+    return {**contract_json(row), "confirmation_email": delivery}
 
 
 @app.post("/api/studio/bookings/{booking_id}/contract/countersign")
@@ -4327,9 +4549,12 @@ def email_template_json(row: EmailTemplate) -> dict:
 @app.get("/api/studio/email-templates")
 def list_email_templates(context=Depends(studio_context), db: Session = Depends(get_db)):
     _, _, tenant = context
+    ensure_starter_email_templates(db, tenant)
     rows = db.scalars(select(EmailTemplate).where(
         EmailTemplate.tenant_id == tenant.id).order_by(EmailTemplate.category, EmailTemplate.name)).all()
-    return [email_template_json(row) for row in rows]
+    result = [email_template_json(row) for row in rows]
+    db.commit()
+    return result
 
 
 @app.post("/api/studio/email-templates", status_code=201)

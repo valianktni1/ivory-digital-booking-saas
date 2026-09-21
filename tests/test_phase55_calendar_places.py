@@ -94,7 +94,7 @@ def test_phase55_frontends_and_security_policy_are_wired():
     assert "venue_details" in client and "IvoryPlaces" in client
     assert "PlaceAutocompleteElement" in places and "includedRegionCodes" in places
     assert "Use this calendar" in studio and "Get directions" in studio
-    assert "/places.js?v=phase-five-six-enquiries-quotes" in client_html
-    assert "/v55.js?v=phase-five-six-enquiries-quotes" in studio_html
+    assert "/places.js?v=phase-five-six-one-workflow-layout" in client_html
+    assert "/v55.js?v=phase-five-six-one-workflow-layout" in studio_html
     assert "https://places.googleapis.com" in nginx
     assert "frame-ancestors https:" in nginx

@@ -257,6 +257,7 @@ class QuoteEmailSendIn(BaseModel):
 class QuoteDraftIn(BaseModel):
     package_ids: list[str] = Field(default_factory=list, max_length=20)
     add_on_ids: list[str] = Field(default_factory=list, max_length=60)
+    required_add_on_ids: list[str] = Field(default_factory=list, max_length=60)
     custom_items: list[dict] = Field(default_factory=list, max_length=30)
     message: str = Field(default="", max_length=4000)
     expires_on: date | None = None

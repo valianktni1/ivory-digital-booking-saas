@@ -8,8 +8,10 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app import main as main_module
+from app import messaging as messaging_module
 from app.database import SessionLocal
 from app.main import app, ensure_compatibility_columns, ensure_public_mail_host
+from app.messaging import send_tenant_email as real_send_tenant_email
 from app.models import EmailMessage, MailboxSetting
 from app.security import encrypt_secret, utcnow
 from app.worker import process_billing_statuses
@@ -346,14 +348,24 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
             headers=csrf(alpha_client), json={"mode": "review", "apply_to_existing": False},
         )
         assert mode.status_code == 200, mode.text
+        contract_template = alpha_client.post(
+            "/api/studio/contract-templates", headers=csrf(alpha_client), json={
+                "name": "Wedding photography agreement",
+                "body": "This agreement records the service, payment terms and responsibilities for the wedding.",
+                "is_active": True,
+            },
+        )
+        assert contract_template.status_code == 201, contract_template.text
         quote = alpha_client.put(
             f"/api/studio/bookings/{booking_id}/quote", headers=csrf(alpha_client), json={
                 "package_ids": [package.json()["id"]], "add_on_ids": [optional.json()["id"]],
+                "required_add_on_ids": [optional.json()["id"]],
                 "custom_items": [{"label": "Travel", "price_pence": 2500}],
                 "message": "Choose the collection that feels right.",
             },
         )
         assert quote.status_code == 200, quote.text
+        assert quote.json()["quote"]["add_ons"][0]["selection_mode"] == "mandatory"
         assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_draft"
         preview = alpha_client.get(
             f"/api/studio/bookings/{booking_id}/quote/email-preview"
@@ -384,7 +396,10 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         failed_state = alpha_client.get(f"/api/studio/bookings/{booking_id}/journey").json()
         assert failed_state["quote"]["status"] == "draft"
 
+        sent_payloads = []
+
         def successful_send(db, tenant, mailbox, recipient, subject, body, **kwargs):
+            sent_payloads.append(kwargs)
             message = EmailMessage(
                 tenant_id=tenant.id,
                 booking_id=kwargs["booking"].id,
@@ -392,6 +407,8 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
                 direction="outbound", folder="sent", sender=mailbox.email_address,
                 recipient=recipient, subject=subject, body_text=body, body_html=body,
                 status="sent", is_read=True, sent_at=utcnow(),
+                attachments=[{"name": item[0], "content_type": item[2], "size": len(item[1])}
+                             for item in kwargs.get("attachments", [])],
             )
             db.add(message)
             db.flush()
@@ -414,11 +431,14 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_viewed"
         assert portal.json()["quote"]["packages"][0]["information_url"] == "https://alpha.example/story-collection"
         assert portal.json()["quote"]["add_ons"][0]["information_url"] == "https://alpha.example/wedding-albums"
+        assert portal.json()["quote"]["add_ons"][0]["selection_mode"] == "mandatory"
+        assert portal.json()["available_questionnaires"] == []
         accepted_quote = manager.post(f"/api/public/portal/{portal_token}/quote/accept", json={
-            "package_id": package.json()["id"], "add_on_ids": [optional.json()["id"]],
+            "package_id": package.json()["id"], "add_on_ids": [],
             "client_name": "Taylor Client",
         })
         assert accepted_quote.status_code == 200, accepted_quote.text
+        assert accepted_quote.json()["contract_ready"] is True
         invoice = accepted_quote.json()["invoice"]
         assert invoice["number"] == "INV-00001"
         assert invoice["total_pence"] == 149500 + 2500
@@ -429,6 +449,11 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         accepted_journey = alpha_client.get(
             f"/api/studio/bookings/{booking_id}/journey"
         ).json()
+        assert accepted_journey["contract"]["title"] == "Wedding photography agreement"
+        accepted_portal = manager.get(f"/api/public/portal/{portal_token}").json()
+        assert {row["form_type"] for row in accepted_portal["available_questionnaires"]} == {
+            "booking", "final_timings"
+        }
         assert all(action["status"] == "cancelled"
                    for action in accepted_journey["workflow_actions"]
                    if action["trigger_key"] == "quote_sent")
@@ -476,29 +501,50 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         )
         assert locked_amendment.status_code == 409
 
-        contract_template = alpha_client.post(
-            "/api/studio/contract-templates", headers=csrf(alpha_client), json={
-                "name": "Wedding photography agreement",
-                "body": "This agreement records the service, payment terms and responsibilities for the wedding.",
-                "is_active": True,
-            },
-        )
-        assert contract_template.status_code == 201, contract_template.text
-        issued = alpha_client.post(
-            f"/api/studio/bookings/{booking_id}/contract", headers=csrf(alpha_client),
-            json={"template_id": contract_template.json()["id"]},
-        )
-        assert issued.status_code == 200, issued.text
+        delivered_messages = []
+
+        class CapturingSMTP:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def ehlo(self):
+                return None
+
+            def login(self, *args, **kwargs):
+                return None
+
+            def send_message(self, message):
+                delivered_messages.append(message)
+
+            def quit(self):
+                return None
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(messaging_module.smtplib, "SMTP_SSL", CapturingSMTP)
+        monkeypatch.setattr(main_module, "send_tenant_email", real_send_tenant_email)
         signed = manager.post(f"/api/public/portal/{portal_token}/contract/sign", json={
             "full_name": "Taylor Client", "agreed": True,
         })
         assert signed.status_code == 200, signed.text
         assert signed.json()["client_signed_at"]
-        countersigned = alpha_client.post(
-            f"/api/studio/bookings/{booking_id}/contract/countersign",
-            headers=csrf(alpha_client), json={"full_name": "Alex Alpha", "agreed": True},
+        assert signed.json()["supplier_signed_at"]
+        assert signed.json()["supplier_name"] == "Alex Alpha"
+        assert signed.json()["confirmation_email"] == "sent"
+        contract_attachments = list(delivered_messages[-1].iter_attachments())
+        assert contract_attachments[0].get_content_type() == "application/pdf"
+        assert contract_attachments[0].get_payload(decode=True).startswith(b"%PDF")
+        sent_contract_email = next(
+            row for row in alpha_client.get("/api/studio/emails").json()
+            if row["subject"].startswith("Your completed wedding agreement")
         )
-        assert countersigned.status_code == 200, countersigned.text
+        assert sent_contract_email["attachments"][0]["name"].endswith("signed-agreement.pdf")
+        stored_contract = alpha_client.get(
+            f"/api/studio/emails/{sent_contract_email['id']}/attachments/0"
+        )
+        assert stored_contract.status_code == 200
+        assert stored_contract.content.startswith(b"%PDF")
         contract_pdf = manager.get(f"/api/public/portal/{portal_token}/contract/pdf")
         assert contract_pdf.status_code == 200
         assert contract_pdf.content.startswith(b"%PDF")
@@ -665,8 +711,22 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
             "category": "Planning", "is_active": True,
         })
         assert template.status_code == 201, template.text
-        assert len(alpha_client.get("/api/studio/email-templates").json()) == 1
-        assert beta_client.get("/api/studio/email-templates").json() == []
+        edited_template = alpha_client.put(
+            f"/api/studio/email-templates/{template.json()['id']}", headers=csrf(alpha_client), json={
+                "name": "Venue information", "subject": "Your venue information",
+                "body": "Hi {{couple_first_name}}, here are the updated details.",
+                "category": "Planning", "is_active": True,
+            },
+        )
+        assert edited_template.status_code == 200, edited_template.text
+        assert edited_template.json()["subject"] == "Your venue information"
+        alpha_templates = alpha_client.get("/api/studio/email-templates").json()
+        assert len(alpha_templates) == 7
+        assert {row["name"] for row in alpha_templates} >= {
+            "Wedding quote", "Contract signed by both parties", "Venue information"
+        }
+        beta_templates = beta_client.get("/api/studio/email-templates").json()
+        assert len(beta_templates) == 6
         branding = alpha_client.put("/api/studio/email-branding", headers=csrf(alpha_client), json={
             "signoff": "All the best", "signature_name": "Alex Alpha",
             "signature_role": "Wedding photographer", "telephone": "07000000001",
@@ -676,6 +736,16 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert branding.status_code == 200, branding.text
         assert branding.json()["owner_notifications_enabled"] is True
         assert beta_client.get("/api/studio/email-branding").json()["signature_name"] == "Beta Films"
+        logo = alpha_client.post(
+            "/api/studio/email-branding/assets/logo", headers=csrf(alpha_client),
+            files={"file": ("alpha-logo.png", b"\x89PNG\r\n\x1a\nTEST-LOGO", "image/png")},
+        )
+        assert logo.status_code == 200, logo.text
+        assert logo.json()["has_logo"] is True
+        logo_download = alpha_client.get("/api/studio/email-branding/assets/logo")
+        assert logo_download.status_code == 200
+        assert logo_download.content.startswith(b"\x89PNG")
+        assert beta_client.get("/api/studio/email-branding/assets/logo").status_code == 404
 
         second_enquiry = manager.post("/api/public/business/alpha-weddings/enquiries", json={
             "first_name": "Morgan", "email": "morgan@example.com", "event_date": "2028-02-12",

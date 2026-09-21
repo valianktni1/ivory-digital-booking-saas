@@ -1,0 +1,53 @@
+PHASE 5.6.1 COMPLETE DUMMY JOURNEY
+
+Before starting
+
+[ ] Open Business & brand and upload a temporary or real studio logo.
+[ ] Confirm the logo preview appears on that same page.
+[ ] Open Email templates and confirm the six editable starter templates appear.
+[ ] Open the Wedding quote template, make a harmless wording change, save it,
+    reopen it and confirm the change remains.
+[ ] Open Contracts & forms and save the agreement wording that should be used.
+[ ] Confirm outgoing email is connected and verified.
+
+Enquiry and quote
+
+[ ] Submit a new dummy enquiry using an email inbox you can access.
+[ ] Open Enquiries. Open the dummy enquiry and confirm it stays in Enquiries.
+[ ] Confirm it does not appear under Weddings yet.
+[ ] In the quote, offer at least one package.
+[ ] Include at least two extras. Set one Optional and one Compulsory.
+[ ] Save the draft and confirm no email is sent.
+[ ] Choose Save & review email.
+[ ] Check the recipient, subject, editable message and large quote-button preview.
+[ ] Send the quote once.
+[ ] Open the received email and confirm the logo, wording and large button appear.
+
+Couple choice and promotion
+
+[ ] Open the secure quote using the button.
+[ ] Confirm no package is selected automatically.
+[ ] Choose a package and confirm only compatible extras appear.
+[ ] Confirm the compulsory extra is locked on and the optional extra can be
+    selected or left out.
+[ ] Accept the quote using the dummy couple's name.
+[ ] Return to Studio. Confirm the enquiry now says Booked.
+[ ] Open Weddings and confirm the couple now appears there with one invoice.
+[ ] Reopen the private link and confirm the accepted package, extras, adjustments
+    and total are itemised.
+
+Forms and agreement
+
+[ ] Confirm the Booking Questionnaire and Final Wedding Timings forms are now
+    available in the private link.
+[ ] Submit a dummy Booking Questionnaire and confirm it appears in Studio.
+[ ] Confirm the active agreement is already available without manually issuing it.
+[ ] Sign the agreement once in the private link.
+[ ] Confirm the private page now says Agreement complete and shows both names.
+[ ] Download the agreement PDF and confirm both signatures are printed.
+[ ] Open the confirmation email and confirm it says both parties have signed.
+[ ] Open its PDF attachment and confirm it is the same completed agreement.
+[ ] In Studio Communications/email history, open that sent message and download
+    the stored PDF attachment again.
+
+Do not use a real couple until every required check above passes.
