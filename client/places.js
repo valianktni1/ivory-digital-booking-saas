@@ -1,19 +1,58 @@
-/* Ivory Digital Phase 5.5 — Google Places venue selection with manual fallback. */
+/* Ivory Digital Phase 5.5.2 — reliable Google Places loading with manual fallback. */
 (() => {
   const selected = new Map();
   let loader;
 
   function loadGoogleMaps(apiKey) {
-    if (window.google?.maps?.importLibrary) return Promise.resolve(window.google.maps);
+    if (window.google?.maps?.importLibrary) return window.google.maps.importLibrary('places');
     if (loader) return loader;
-    loader = new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&loading=async&v=weekly`;
-      script.async = true;
-      script.onload = () => window.google?.maps?.importLibrary ? resolve(window.google.maps) : reject(new Error('Google Places did not load'));
-      script.onerror = () => reject(new Error('Google Places did not load'));
-      document.head.appendChild(script);
-    });
+
+    /*
+     * Google's supported dynamic-library bootstrap. Its internal callback
+     * resolves only when importLibrary is genuinely ready. The previous
+     * script.onload check could run too early when loading=async was used.
+     */
+    ((settings) => {
+      let bootstrapPromise;
+      let script;
+      let key;
+      const product = 'The Google Maps JavaScript API';
+      const namespace = 'google';
+      const importName = 'importLibrary';
+      const callbackName = '__ib__';
+      const doc = document;
+      const root = window;
+      const googleNamespace = root[namespace] || (root[namespace] = {});
+      const mapsNamespace = googleNamespace.maps || (googleNamespace.maps = {});
+      const requestedLibraries = new Set();
+      const parameters = new URLSearchParams();
+      const bootstrap = () => bootstrapPromise || (bootstrapPromise = new Promise(async (resolve, reject) => {
+        script = doc.createElement('script');
+        parameters.set('libraries', [...requestedLibraries].join(','));
+        for (key in settings) {
+          parameters.set(key.replace(/[A-Z]/g, letter => `_${letter[0].toLowerCase()}`), settings[key]);
+        }
+        parameters.set('callback', `${namespace}.maps.${callbackName}`);
+        script.src = `https://maps.${namespace}apis.com/maps/api/js?${parameters}`;
+        mapsNamespace[callbackName] = resolve;
+        script.onerror = () => {
+          bootstrapPromise = reject(new Error(`${product} could not load.`));
+        };
+        script.nonce = doc.querySelector('script[nonce]')?.nonce || '';
+        doc.head.appendChild(script);
+      }));
+
+      if (mapsNamespace[importName]) {
+        console.warn(`${product} only loads once. Ignoring:`, settings);
+      } else {
+        mapsNamespace[importName] = (library, ...args) => {
+          requestedLibraries.add(library);
+          return bootstrap().then(() => mapsNamespace[importName](library, ...args));
+        };
+      }
+    })({key: apiKey, v: 'weekly'});
+
+    loader = window.google.maps.importLibrary('places');
     return loader;
   }
 
@@ -29,8 +68,8 @@
     const config = form?.google_places || {};
     const venueQuestions = (form?.questions || []).filter(question => question.question_type === 'venue');
     if (!config.configured || !config.api_key || !venueQuestions.length) return;
-    await loadGoogleMaps(config.api_key);
-    const {PlaceAutocompleteElement} = await google.maps.importLibrary('places');
+    const {PlaceAutocompleteElement} = await loadGoogleMaps(config.api_key);
+    if (!PlaceAutocompleteElement) throw new Error('Google Places autocomplete is unavailable');
     for (const question of venueQuestions) {
       const input = document.querySelector(`#question-${question.id}`);
       if (!input || input.dataset.placesEnhanced === 'true') continue;

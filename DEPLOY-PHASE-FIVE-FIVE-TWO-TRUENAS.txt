@@ -1,0 +1,20 @@
+After copying the three client files into your local ivory-digital-booking repository, commit and push them with GitHub Desktop. Then run this on TrueNAS:
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+
+sudo git pull --ff-only
+
+sudo docker compose -f compose.yaml build --no-cache client
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate client
+
+sudo docker compose -f compose.yaml ps
+
+curl -fsS https://client.ivorydigital.uk/ | grep -o 'phase-five-five-two-places-loader' | head -1
+
+curl -fsS 'https://client.ivorydigital.uk/places.js?v=phase-five-five-two-places-loader' | grep -F "Google's supported dynamic-library bootstrap"
+
+Expected final two lines:
+
+phase-five-five-two-places-loader
+     * Google's supported dynamic-library bootstrap. Its internal callback
