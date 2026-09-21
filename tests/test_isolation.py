@@ -7,7 +7,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
+from app import main as main_module
+from app.database import SessionLocal
 from app.main import app, ensure_compatibility_columns, ensure_public_mail_host
+from app.models import EmailMessage, MailboxSetting
+from app.security import encrypt_secret, utcnow
 from app.worker import process_billing_statuses
 
 
@@ -55,12 +59,15 @@ def test_phase_five_three_additive_column_upgrade():
         calendar_columns = {row[1] for row in session.execute(text("PRAGMA table_info(tenant_calendar_connections)"))}
     assert "information_url" in package_columns
     assert "information_url" in add_on_columns
+    assert "eligible_package_ids" in add_on_columns
     assert "venue_details" in enquiry_columns
     assert "venue_details" in booking_columns
+    assert "is_provisional" in booking_columns
+    assert "promoted_at" in booking_columns
     assert "last_synced_at" in calendar_columns
 
 
-def test_manager_mfa_and_cross_tenant_isolation():
+def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
     with TestClient(app) as manager:
         login = manager.post("/api/auth/login", json={
             "email": "manager@example.com", "password": "TestPlatformPassword!2026"
@@ -221,9 +228,11 @@ def test_manager_mfa_and_cross_tenant_isolation():
         optional = alpha_client.post("/api/studio/add-ons", headers=csrf(alpha_client), json={
             "name": "Complimentary album", "price_pence": 0, "selection_mode": "optional",
             "information_url": "https://alpha.example/wedding-albums",
+            "eligible_package_ids": [package.json()["id"]],
         })
         assert optional.status_code == 201
         assert optional.json()["information_url"] == "https://alpha.example/wedding-albums"
+        assert optional.json()["eligible_package_ids"] == [package.json()["id"]]
         assert beta_client.get("/api/studio/add-ons").json() == []
 
         forms = alpha_client.get("/api/studio/questionnaire-templates")
@@ -314,14 +323,22 @@ def test_manager_mfa_and_cross_tenant_isolation():
         assert beta_client.get("/api/studio/enquiries").json() == []
 
         converted = alpha_client.post(
-            f"/api/studio/enquiries/{enquiries[0]['id']}/convert",
+            f"/api/studio/enquiries/{enquiries[0]['id']}/workspace",
             headers=csrf(alpha_client), json={"title": "Taylor & Jordan"},
         )
-        assert converted.status_code == 201, converted.text
+        assert converted.status_code == 200, converted.text
         booking_id = converted.json()["id"]
-        assert converted.json()["status"] == "quote_preparation"
+        assert converted.json()["status"] == "enquiry"
+        assert converted.json()["is_provisional"] is True
         assert converted.json()["venue_details"]["formatted_address"].startswith("Test Hall")
         assert "destination_place_id=test-place-alpha" in converted.json()["venue_maps_url"]
+        assert alpha_client.get("/api/studio/bookings").json() == []
+        assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "new"
+        provisional_search = alpha_client.get("/api/studio/search?q=Taylor").json()["results"]
+        assert any(row["type"] == "enquiry" and row["id"] == enquiries[0]["id"]
+                   for row in provisional_search)
+        assert not any(row["type"] == "booking" and row["id"] == booking_id
+                       for row in provisional_search)
         assert beta_client.get(f"/api/studio/bookings/{booking_id}/journey").status_code == 404
 
         mode = alpha_client.put(
@@ -337,15 +354,64 @@ def test_manager_mfa_and_cross_tenant_isolation():
             },
         )
         assert quote.status_code == 200, quote.text
+        assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_draft"
+        preview = alpha_client.get(
+            f"/api/studio/bookings/{booking_id}/quote/email-preview"
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["recipient"] == "taylor@example.com"
+        assert preview.json()["portal_url"] in preview.json()["body"]
+
+        with SessionLocal() as db:
+            db.add(MailboxSetting(
+                tenant_id=alpha["id"], from_name="Alpha Weddings",
+                email_address="hello@alpha.example", smtp_host="smtp.alpha.example",
+                smtp_port=465, smtp_security="ssl", smtp_username="hello@alpha.example",
+                smtp_password_encrypted=encrypt_secret("test-smtp-password"),
+                smtp_verified_at=utcnow(),
+            ))
+            db.commit()
+
+        def failed_send(*args, **kwargs):
+            raise RuntimeError("simulated SMTP failure")
+
+        monkeypatch.setattr(main_module, "send_tenant_email", failed_send)
+        failed_quote = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/quote/send", headers=csrf(alpha_client),
+            json={"subject": preview.json()["subject"], "body": preview.json()["body"]},
+        )
+        assert failed_quote.status_code == 422, failed_quote.text
+        failed_state = alpha_client.get(f"/api/studio/bookings/{booking_id}/journey").json()
+        assert failed_state["quote"]["status"] == "draft"
+
+        def successful_send(db, tenant, mailbox, recipient, subject, body, **kwargs):
+            message = EmailMessage(
+                tenant_id=tenant.id,
+                booking_id=kwargs["booking"].id,
+                template_id=kwargs.get("template_id"),
+                direction="outbound", folder="sent", sender=mailbox.email_address,
+                recipient=recipient, subject=subject, body_text=body, body_html=body,
+                status="sent", is_read=True, sent_at=utcnow(),
+            )
+            db.add(message)
+            db.flush()
+            return message
+
+        monkeypatch.setattr(main_module, "send_tenant_email", successful_send)
         sent_quote = alpha_client.post(
             f"/api/studio/bookings/{booking_id}/quote/send", headers=csrf(alpha_client),
+            json={"subject": preview.json()["subject"], "body": preview.json()["body"]},
         )
         assert sent_quote.status_code == 200, sent_quote.text
-        assert sent_quote.json()["automatic_email_sent"] is False
+        assert sent_quote.json()["automatic_email_sent"] is True
+        assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_sent"
+        assert alpha_client.get("/api/studio/bookings").json() == []
         portal_token = sent_quote.json()["portal_url"].rsplit("/", 1)[-1]
         portal = manager.get(f"/api/public/portal/{portal_token}")
         assert portal.status_code == 200, portal.text
         assert portal.json()["quote"]["status"] == "sent"
+        assert portal.json()["quote"]["viewed_at"]
+        assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_viewed"
         assert portal.json()["quote"]["packages"][0]["information_url"] == "https://alpha.example/story-collection"
         assert portal.json()["quote"]["add_ons"][0]["information_url"] == "https://alpha.example/wedding-albums"
         accepted_quote = manager.post(f"/api/public/portal/{portal_token}/quote/accept", json={
@@ -356,6 +422,16 @@ def test_manager_mfa_and_cross_tenant_isolation():
         invoice = accepted_quote.json()["invoice"]
         assert invoice["number"] == "INV-00001"
         assert invoice["total_pence"] == 149500 + 2500
+        booked_enquiry = alpha_client.get("/api/studio/enquiries").json()[0]
+        assert booked_enquiry["status"] == "booked"
+        assert booked_enquiry["is_provisional"] is False
+        assert [row["id"] for row in alpha_client.get("/api/studio/bookings").json()] == [booking_id]
+        accepted_journey = alpha_client.get(
+            f"/api/studio/bookings/{booking_id}/journey"
+        ).json()
+        assert all(action["status"] == "cancelled"
+                   for action in accepted_journey["workflow_actions"]
+                   if action["trigger_key"] == "quote_sent")
         assert manager.post(f"/api/public/portal/{portal_token}/quote/accept", json={
             "package_id": package.json()["id"], "client_name": "Taylor Client",
         }).status_code == 409

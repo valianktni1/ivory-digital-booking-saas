@@ -28,7 +28,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -59,7 +59,7 @@ from .schemas import (AccountAccessIn, AutomationPauseIn, BillingSettingsIn,
                       InvitationAcceptIn, LoginIn, AddOnIn, MailboxSettingsIn,
                       ManualEmailIn, NoteIn, PackageIn, PaymentRecordIn, PlatformPaymentIn, PublicEnquiryIn,
                       QuestionnaireSubmitIn, QuestionnaireTemplateIn,
-                      QuoteAcceptIn, QuoteAmendmentIn, QuoteDraftIn, SpecialPaymentIn,
+                      QuoteAcceptIn, QuoteAmendmentIn, QuoteDraftIn, QuoteEmailSendIn, SpecialPaymentIn,
                       TenantCreateIn, TenantStatusIn, TotpConfirmIn, TrialExtensionIn,
                       TaskIn, TaskUpdateIn, WorkflowActionReviewIn,
                       WorkflowBookingControlIn, WorkflowIn, WorkflowModeIn,
@@ -73,7 +73,7 @@ from .security import (clear_login_failures, create_session, csrf_matches,
 from .tenant_context import (install_postgres_rls, membership_for,
                              set_database_tenant)
 from .questionnaire_defaults import DEFAULT_QUESTIONNAIRES, default_questionnaire
-from .messaging import send_tenant_email
+from .messaging import merge_message, send_tenant_email
 
 
 settings = get_settings()
@@ -132,17 +132,17 @@ DEFAULT_HELP_ARTICLES = (
         "slug": "turn-enquiry-into-wedding", "title": "How do I start a booking from an enquiry?",
         "category": "Enquiries", "contexts": ["enquiries", "weddings"], "tour_key": "enquiries",
         "keywords": ["convert", "enquiry", "inquiry", "start journey", "make booking", "new wedding"],
-        "summary": "Convert the enquiry once you are ready to prepare their quote.",
-        "body": "Open Enquiries and find the couple. Review their date, venue, message and answers, then select Start client journey.\n\nTheir details are carried into Weddings automatically, so you do not need to type them again. This does not secure the date or send an email by itself.",
+        "summary": "Open the enquiry and manage its quote without moving it into Weddings.",
+        "body": "Open Enquiries and select the couple. Their details, quote and email history stay together there while you prepare and send the quote.\n\nThe enquiry moves into Weddings only when the couple accepts their quote or you deliberately choose Mark as booked.",
         "action_label": "View enquiries", "action_route": "enquiries", "sort_order": 30,
     },
     {
         "slug": "create-and-send-quote", "title": "How do I prepare a quote?",
-        "category": "Quotes", "contexts": ["weddings"], "tour_key": "weddings",
+        "category": "Quotes", "contexts": ["enquiries", "weddings"], "tour_key": "enquiries",
         "keywords": ["quote", "quotation", "send quote", "package choice", "client link", "prepare quote"],
-        "summary": "Choose what to offer, save it, then copy the secure couple link.",
-        "body": "Open Weddings and select the couple. Tick the packages and optional extras you want to offer, add your personal message, and save the draft.\n\nSelect Prepare quote link when it is ready. The private couple link is copied for you to send personally. No package is pre-selected for the couple and preparing the link does not email them automatically.",
-        "action_label": "Open weddings", "action_route": "weddings", "sort_order": 40,
+        "summary": "Choose what to offer, save the draft, review the exact email and send deliberately.",
+        "body": "Open Enquiries and select the couple. Tick the packages and extras you want to offer, add any custom item or discount, then save the draft. Saving never sends an email.\n\nChoose Save & review email to check the recipient, subject, message and secure link. Personal changes affect only this couple. The quote is sent only when you press Send quote now.",
+        "action_label": "Open enquiries", "action_route": "enquiries", "sort_order": 40,
     },
     {
         "slug": "change-accepted-quote", "title": "Can I change a quote after it is accepted?",
@@ -331,6 +331,15 @@ def ensure_help_catalog(db: Session) -> None:
         calendar_help.body = current["body"]
         calendar_help.keywords = current["keywords"]
         added = True
+    for slug, marker in (("turn-enquiry-into-wedding", "start client journey"),
+                         ("create-and-send-quote", "prepare quote link")):
+        row = existing_rows.get(slug)
+        if row and marker in row.body.lower():
+            current = next(item for item in DEFAULT_HELP_ARTICLES if item["slug"] == slug)
+            for key in ("title", "category", "summary", "body", "keywords", "contexts",
+                        "action_label", "action_route", "tour_key", "sort_order"):
+                setattr(row, key, current.get(key, getattr(row, key)))
+            added = True
     if added:
         db.commit()
 
@@ -367,21 +376,58 @@ def ensure_compatibility_columns(db: Session) -> None:
     if db.bind.dialect.name == "postgresql":
         db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
         db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS eligible_package_ids JSON NOT NULL DEFAULT '[]'::json"))
         db.execute(text("ALTER TABLE enquiries ADD COLUMN IF NOT EXISTS venue_details JSON NOT NULL DEFAULT '{}'::json"))
         db.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS venue_details JSON NOT NULL DEFAULT '{}'::json"))
+        db.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS is_provisional BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS ix_bookings_is_provisional ON bookings (is_provisional)"))
         db.execute(text("ALTER TABLE tenant_calendar_connections ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ"))
     elif db.bind.dialect.name == "sqlite":
         for table_name in ("service_packages", "package_add_ons"):
             columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
             if "information_url" not in columns:
                 db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        add_on_columns = {row[1] for row in db.execute(text("PRAGMA table_info(package_add_ons)"))}
+        if add_on_columns and "eligible_package_ids" not in add_on_columns:
+            db.execute(text("ALTER TABLE package_add_ons ADD COLUMN eligible_package_ids JSON NOT NULL DEFAULT '[]'"))
         for table_name in ("enquiries", "bookings"):
             columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
             if columns and "venue_details" not in columns:
                 db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN venue_details JSON NOT NULL DEFAULT '{{}}'"))
+        booking_columns = {row[1] for row in db.execute(text("PRAGMA table_info(bookings)"))}
+        if booking_columns and "is_provisional" not in booking_columns:
+            db.execute(text("ALTER TABLE bookings ADD COLUMN is_provisional BOOLEAN NOT NULL DEFAULT 0"))
+        if booking_columns and "promoted_at" not in booking_columns:
+            db.execute(text("ALTER TABLE bookings ADD COLUMN promoted_at DATETIME"))
         calendar_columns = {row[1] for row in db.execute(text("PRAGMA table_info(tenant_calendar_connections)"))}
         if calendar_columns and "last_synced_at" not in calendar_columns:
             db.execute(text("ALTER TABLE tenant_calendar_connections ADD COLUMN last_synced_at DATETIME"))
+    # Earlier releases marked an enquiry converted as soon as quote work began.
+    # Reclassify only unaccepted/uninvoiced records as provisional; confirmed
+    # commercial records always remain real Weddings.
+    if inspect(db.bind).has_table("booking_journeys"):
+        journeys = db.scalars(select(BookingJourney).where(
+            BookingJourney.enquiry_id.is_not(None))).all()
+        for journey in journeys:
+            enquiry = db.get(Enquiry, journey.enquiry_id)
+            booking = db.get(Booking, journey.booking_id)
+            if not enquiry or not booking:
+                continue
+            has_invoice = bool(db.scalar(select(BookingInvoice.id).where(
+                BookingInvoice.booking_id == booking.id).limit(1)))
+            accepted = bool(journey.accepted_quote)
+            if not accepted and not has_invoice and booking.status in {
+                    "enquiry", "quote_preparation", "awaiting_quote_acceptance"}:
+                booking.is_provisional = True
+                quote_status = (journey.quote_state or {}).get("status")
+                enquiry.status = ("quote_sent" if quote_status == "sent"
+                                  else "quote_draft" if (journey.quote_state or {}).get("packages")
+                                  else "new")
+            else:
+                booking.is_provisional = False
+                enquiry.status = "booked"
+                booking.promoted_at = booking.promoted_at or utcnow()
     db.commit()
 
 
@@ -436,7 +482,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.5-calendar-places-directions",
+    version="0.5.6-enquiries-quotes",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -504,7 +550,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.20-phase-five-five-calendar-places", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.21-phase-five-six-enquiries-quotes", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1067,7 +1113,8 @@ def support_view(tenant_id: str, request: Request,
         raise HTTPException(404, "Business not found")
     subscription = ensure_subscription(db, tenant)
     client_count = db.scalar(select(func.count(Client.id)).where(Client.tenant_id == tenant.id)) or 0
-    booking_count = db.scalar(select(func.count(Booking.id)).where(Booking.tenant_id == tenant.id)) or 0
+    booking_count = db.scalar(select(func.count(Booking.id)).where(
+        Booking.tenant_id == tenant.id, Booking.is_provisional.is_(False))) or 0
     audit(db, "support_view_opened", "tenant", tenant.id, actor=admin,
           tenant_id=tenant.id, request=request,
           detail={"scope": "health_and_counts_only"})
@@ -1301,7 +1348,9 @@ def add_on_json(row: PackageAddOn) -> dict:
     return {"id": row.id, "name": row.name, "description": row.description,
             "information_url": row.information_url or "",
             "price_pence": row.price_pence, "selection_mode": row.selection_mode,
-            "mandatory_reason": row.mandatory_reason, "is_active": row.is_active,
+            "mandatory_reason": row.mandatory_reason,
+            "eligible_package_ids": row.eligible_package_ids or [],
+            "is_active": row.is_active,
             "sort_order": row.sort_order}
 
 
@@ -1384,6 +1433,17 @@ def validate_package(payload: PackageIn) -> None:
 def validate_add_on(payload: AddOnIn) -> None:
     if payload.selection_mode == "mandatory" and not payload.mandatory_reason:
         raise HTTPException(422, "Explain why this add-on is mandatory for the couple")
+
+
+def validate_add_on_packages(db: Session, tenant_id: str, payload: AddOnIn) -> None:
+    wanted = set(payload.eligible_package_ids)
+    if not wanted:
+        return
+    found = set(db.scalars(select(ServicePackage.id).where(
+        ServicePackage.tenant_id == tenant_id,
+        ServicePackage.id.in_(wanted))).all())
+    if found != wanted:
+        raise HTTPException(422, "One or more eligible packages are not available in this studio")
 
 
 def mark_onboarding(tenant: Tenant, key: str) -> None:
@@ -1498,8 +1558,11 @@ def mailbox_json(row: MailboxSetting | None) -> dict:
 def studio_dashboard(context=Depends(studio_context), db: Session = Depends(get_db)):
     session, membership, tenant = context
     client_count = db.scalar(select(func.count(Client.id)).where(Client.tenant_id == tenant.id)) or 0
-    booking_count = db.scalar(select(func.count(Booking.id)).where(Booking.tenant_id == tenant.id)) or 0
-    enquiry_count = db.scalar(select(func.count(Enquiry.id)).where(Enquiry.tenant_id == tenant.id)) or 0
+    booking_count = db.scalar(select(func.count(Booking.id)).where(
+        Booking.tenant_id == tenant.id, Booking.is_provisional.is_(False))) or 0
+    enquiry_count = db.scalar(select(func.count(Enquiry.id)).where(
+        Enquiry.tenant_id == tenant.id,
+        Enquiry.status.notin_(["closed", "booked"]))) or 0
     return {
         "user": {"full_name": session.user.full_name, "email": session.user.email,
                  "role": membership.role.value},
@@ -1584,6 +1647,7 @@ def create_add_on(payload: AddOnIn, request: Request,
                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
     validate_add_on(payload)
     membership, tenant = studio_write_context(session, db)
+    validate_add_on_packages(db, tenant.id, payload)
     row = PackageAddOn(tenant_id=membership.tenant_id, **payload.model_dump())
     db.add(row); db.flush()
     audit(db, "add_on_created", "package_add_on", row.id, actor=session.user,
@@ -1597,6 +1661,7 @@ def update_add_on(add_on_id: str, payload: AddOnIn, request: Request,
                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
     validate_add_on(payload)
     membership, tenant = studio_write_context(session, db)
+    validate_add_on_packages(db, tenant.id, payload)
     row = db.scalar(select(PackageAddOn).where(PackageAddOn.id == add_on_id,
                     PackageAddOn.tenant_id == membership.tenant_id))
     if not row: raise HTTPException(404, "Add-on not found")
@@ -1722,16 +1787,33 @@ def list_enquiries(context=Depends(studio_context), db: Session = Depends(get_db
                       .order_by(Enquiry.created_at.desc()).limit(250)).all()
     result = []
     for row in rows:
+        journey = db.scalar(select(BookingJourney).where(
+            BookingJourney.tenant_id == tenant.id,
+            BookingJourney.enquiry_id == row.id))
+        booking = db.get(Booking, journey.booking_id) if journey else None
+        quote = dict(journey.quote_state or {}) if journey else {}
         answers = db.scalars(select(EnquiryAnswer).where(
             EnquiryAnswer.tenant_id == tenant.id, EnquiryAnswer.enquiry_id == row.id
         ).order_by(EnquiryAnswer.sort_order)).all()
+        display_status = row.status
+        if (booking and booking.is_provisional and quote.get("status") == "sent"
+                and quote.get("expires_on")):
+            try:
+                if date.fromisoformat(quote["expires_on"]) < date.today():
+                    display_status = "quote_expired"
+            except (TypeError, ValueError):
+                pass
         result.append({"id": row.id, "first_name": row.first_name, "partner_name": row.partner_name,
              "email": row.email, "phone": row.phone,
              "event_date": row.event_date.isoformat() if row.event_date else None,
              "venue": row.venue, "venue_details": row.venue_details or {},
              "venue_maps_url": venue_maps_url(row.venue, row.venue_details),
              "package_interest": row.package_interest,
-             "message": row.message, "status": row.status,
+             "message": row.message, "status": display_status,
+             "booking_id": booking.id if booking else None,
+             "is_provisional": booking.is_provisional if booking else True,
+             "quote_status": quote.get("status"),
+             "quote_updated_at": quote.get("updated_at"),
              "answers": [{"label": item.question_label, "answer": item.answer} for item in answers],
              "created_at": row.created_at.isoformat()})
     return result
@@ -2121,7 +2203,7 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
               "event_date": booking.event_date.isoformat() if booking.event_date else None,
               "venue": booking.venue, "venue_details": booking.venue_details or {},
               "venue_maps_url": venue_maps_url(booking.venue, booking.venue_details),
-              "status": booking.status,
+              "status": booking.status, "is_provisional": booking.is_provisional,
               "client": {"id": client.id, "first_name": client.first_name,
                          "last_name": client.last_name, "partner_name": client.partner_name,
                          "email": client.email, "phone": client.phone} if client else None,
@@ -2150,6 +2232,7 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
                             "detail": item.detail or {},
                             "created_at": item.created_at.isoformat()} for item in activity],
               "workflow_actions": [{"id": item.id, "step_id": item.step_id,
+                                      "trigger_key": item.trigger_key,
                                       "mode": item.mode, "due_at": item.due_at.isoformat(),
                                       "status": item.status, "payload": item.payload or {}}
                                      for item in actions]}
@@ -2427,18 +2510,13 @@ def sync_tenant_calendar_records(db: Session, tenant: Tenant) -> list[dict]:
     return results
 
 
-@app.post("/api/studio/enquiries/{enquiry_id}/convert", status_code=201)
-def convert_enquiry(enquiry_id: str, payload: EnquiryConvertIn, request: Request,
-                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
-    membership, tenant = studio_write_context(session, db)
-    enquiry = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id,
-                        Enquiry.tenant_id == tenant.id))
-    if not enquiry:
-        raise HTTPException(404, "Enquiry not found")
+def enquiry_workspace(db: Session, tenant: Tenant, enquiry: Enquiry,
+                      title: str = "") -> tuple[Booking, BookingJourney, bool]:
+    """Return the private quote workspace without promoting it to Weddings."""
     existing_journey = db.scalar(select(BookingJourney).where(
         BookingJourney.tenant_id == tenant.id, BookingJourney.enquiry_id == enquiry.id))
     if existing_journey:
-        return journey_json(db, studio_booking(db, tenant.id, existing_journey.booking_id), existing_journey)
+        return studio_booking(db, tenant.id, existing_journey.booking_id), existing_journey, False
     email = normalise_email(enquiry.email)
     client = db.scalar(select(Client).where(Client.tenant_id == tenant.id, Client.email == email))
     if not client:
@@ -2446,14 +2524,64 @@ def convert_enquiry(enquiry_id: str, payload: EnquiryConvertIn, request: Request
                         partner_name=enquiry.partner_name or None, email=email,
                         phone=enquiry.phone or None)
         db.add(client); db.flush()
-    title = payload.title.strip() or " & ".join(filter(None, [enquiry.first_name, enquiry.partner_name]))
-    booking = Booking(tenant_id=tenant.id, client_id=client.id, title=title,
+    display_title = title.strip() or " & ".join(filter(None, [enquiry.first_name, enquiry.partner_name]))
+    booking = Booking(tenant_id=tenant.id, client_id=client.id, title=display_title,
                       event_date=enquiry.event_date, venue=enquiry.venue or None,
-                      venue_details=enquiry.venue_details or {}, status="quote_preparation")
+                      venue_details=enquiry.venue_details or {}, status="enquiry",
+                      is_provisional=True)
     db.add(booking); db.flush()
     journey = booking_journey(db, booking); journey.enquiry_id = enquiry.id
-    enquiry.status = "converted"
-    audit(db, "enquiry_converted", "booking", booking.id, actor=session.user,
+    return booking, journey, True
+
+
+@app.post("/api/studio/enquiries/{enquiry_id}/workspace")
+def open_enquiry_workspace(enquiry_id: str, payload: EnquiryConvertIn, request: Request,
+                           session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    enquiry = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id,
+                        Enquiry.tenant_id == tenant.id))
+    if not enquiry:
+        raise HTTPException(404, "Enquiry not found")
+    if enquiry.status == "booked":
+        existing = db.scalar(select(BookingJourney).where(
+            BookingJourney.tenant_id == tenant.id, BookingJourney.enquiry_id == enquiry.id))
+        if not existing:
+            raise HTTPException(409, "This enquiry is already booked")
+        return journey_json(db, studio_booking(db, tenant.id, existing.booking_id), existing)
+    booking, journey, created = enquiry_workspace(db, tenant, enquiry, payload.title)
+    if created:
+        audit(db, "enquiry_workspace_created", "booking", booking.id, actor=session.user,
+              tenant_id=tenant.id, request=request, detail={"enquiry_id": enquiry.id})
+    result = journey_json(db, booking, journey)
+    db.commit()
+    return result
+
+
+# Backwards-compatible alias used by older studio assets. It now opens the
+# provisional workspace and deliberately does not move the enquiry.
+@app.post("/api/studio/enquiries/{enquiry_id}/convert", status_code=201)
+def convert_enquiry(enquiry_id: str, payload: EnquiryConvertIn, request: Request,
+                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    return open_enquiry_workspace(enquiry_id, payload, request, session, db)
+
+
+@app.post("/api/studio/enquiries/{enquiry_id}/mark-booked")
+def mark_enquiry_booked(enquiry_id: str, payload: EnquiryConvertIn, request: Request,
+                        session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    enquiry = db.scalar(select(Enquiry).where(
+        Enquiry.id == enquiry_id, Enquiry.tenant_id == tenant.id))
+    if not enquiry:
+        raise HTTPException(404, "Enquiry not found")
+    booking, journey, _ = enquiry_workspace(db, tenant, enquiry, payload.title)
+    booking.is_provisional = False
+    booking.promoted_at = booking.promoted_at or utcnow()
+    if booking.status in {"enquiry", "quote_preparation", "awaiting_quote_acceptance"}:
+        booking.status = "confirmed"
+    enquiry.status = "booked"
+    cancel_open_enquiry_actions(db, tenant.id, enquiry.id, booking.id)
+    sync_booking_calendar_safely(db, tenant, booking, journey)
+    audit(db, "enquiry_marked_booked", "booking", booking.id, actor=session.user,
           tenant_id=tenant.id, request=request, detail={"enquiry_id": enquiry.id})
     result = journey_json(db, booking, journey)
     db.commit()
@@ -2463,7 +2591,9 @@ def convert_enquiry(enquiry_id: str, payload: EnquiryConvertIn, request: Request
 @app.get("/api/studio/bookings")
 def list_bookings(context=Depends(studio_context), db: Session = Depends(get_db)):
     _, _, tenant = context
-    rows = db.scalars(select(Booking).where(Booking.tenant_id == tenant.id)
+    rows = db.scalars(select(Booking).where(
+                      Booking.tenant_id == tenant.id,
+                      Booking.is_provisional.is_(False))
                       .order_by(Booking.event_date, Booking.created_at.desc())).all()
     result = []
     for booking in rows:
@@ -2496,14 +2626,79 @@ def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
         PackageAddOn.is_active.is_(True))).all()
     allowed_addons = {item.id: item for item in add_on_rows}
     selected_ids = set(payload.add_on_ids)
-    selected_ids.update(item.id for item in add_on_rows if item.selection_mode == "mandatory")
+    offered_packages = {item.id for item in package_rows}
+    selected_ids.update(item.id for item in add_on_rows
+                        if item.selection_mode == "mandatory"
+                        and (not item.eligible_package_ids
+                             or bool(offered_packages & set(item.eligible_package_ids))))
     if any(item_id not in allowed_addons for item_id in selected_ids):
         raise HTTPException(422, "One of the selected add-ons is no longer available")
+    incompatible = [allowed_addons[item_id].name for item_id in selected_ids
+                    if allowed_addons[item_id].eligible_package_ids
+                    and not (offered_packages & set(allowed_addons[item_id].eligible_package_ids))]
+    if incompatible:
+        raise HTTPException(422, f"{incompatible[0]} is not available with any offered package")
     return {"status": "draft", "packages": [package_json(item) for item in package_rows],
-            "add_ons": [add_on_json(allowed_addons[item_id]) for item_id in selected_ids],
+            "add_ons": [add_on_json(item) for item in add_on_rows if item.id in selected_ids],
             "custom_items": payload.custom_items, "message": payload.message,
             "expires_on": payload.expires_on.isoformat() if payload.expires_on else None,
             "updated_at": utcnow().isoformat()}
+
+
+def enquiry_for_journey(db: Session, journey: BookingJourney) -> Enquiry | None:
+    if not journey.enquiry_id:
+        return None
+    return db.scalar(select(Enquiry).where(
+        Enquiry.id == journey.enquiry_id,
+        Enquiry.tenant_id == journey.tenant_id))
+
+
+def cancel_open_enquiry_actions(db: Session, tenant_id: str, enquiry_id: str,
+                                booking_id: str | None = None) -> int:
+    """Stop only this enquiry's unsent workflow work after it is closed/booked."""
+    links = [WorkflowAction.enquiry_id == enquiry_id]
+    if booking_id:
+        links.append(WorkflowAction.booking_id == booking_id)
+    rows = db.scalars(select(WorkflowAction).where(
+        WorkflowAction.tenant_id == tenant_id,
+        or_(*links),
+        WorkflowAction.completed_at.is_(None),
+        WorkflowAction.status.notin_(["sent", "completed", "cancelled", "skipped"]))).all()
+    for action in rows:
+        action.status = "cancelled"
+        action.completed_at = utcnow()
+    return len(rows)
+
+
+def quote_email_copy(db: Session, tenant: Tenant, booking: Booking,
+                     journey: BookingJourney) -> dict:
+    client = db.scalar(select(Client).where(
+        Client.id == booking.client_id, Client.tenant_id == tenant.id))
+    template = db.scalar(select(EmailTemplate).where(
+        EmailTemplate.tenant_id == tenant.id,
+        EmailTemplate.is_active.is_(True),
+        or_(func.lower(EmailTemplate.category) == "quote",
+            func.lower(EmailTemplate.name).like("%quote%"))
+    ).order_by(EmailTemplate.updated_at.desc()).limit(1))
+    subject = template.subject if template else "Your wedding quote from {{business_name}}"
+    body = template.body if template else (
+        "Hi {{couple_first_name}},\n\n"
+        "Thank you for getting in touch. I have prepared your wedding quote and package choices.\n\n"
+        "View your private quote here: {{client_portal_link}}\n\n"
+        "If you have any questions, just reply to this email."
+    )
+    link = portal_url(journey)
+    if "{{client_portal_link}}" not in body and link not in body:
+        body = f"{body.rstrip()}\n\nView your private quote here: {{client_portal_link}}"
+    extra = {"client_portal_link": link}
+    return {
+        "recipient": client.email if client else "",
+        "subject": merge_message(subject, tenant, booking, client, extra),
+        "body": merge_message(body, tenant, booking, client, extra),
+        "portal_url": link,
+        "template_id": template.id if template else None,
+        "master_template_unchanged": True,
+    }
 
 
 @app.put("/api/studio/bookings/{booking_id}/quote")
@@ -2515,6 +2710,9 @@ def save_quote(booking_id: str, payload: QuoteDraftIn, request: Request,
         raise HTTPException(409, "This quote has been accepted and its snapshot cannot be changed")
     journey.quote_state = quote_snapshot(db, tenant.id, payload)
     booking.status = "quote_preparation"
+    enquiry = enquiry_for_journey(db, journey)
+    if enquiry and booking.is_provisional:
+        enquiry.status = "quote_draft"
     audit(db, "quote_draft_saved", "booking", booking.id, actor=session.user,
           tenant_id=tenant.id, request=request)
     result = journey_json(db, booking, journey)
@@ -2522,8 +2720,19 @@ def save_quote(booking_id: str, payload: QuoteDraftIn, request: Request,
     return result
 
 
+@app.get("/api/studio/bookings/{booking_id}/quote/email-preview")
+def preview_quote_email(booking_id: str, context=Depends(studio_context),
+                        db: Session = Depends(get_db)):
+    _, _, tenant = context
+    booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
+    quote_state = dict(journey.quote_state or {})
+    if not quote_state.get("packages"):
+        raise HTTPException(422, "Add at least one package before reviewing the quote email")
+    return quote_email_copy(db, tenant, booking, journey)
+
+
 @app.post("/api/studio/bookings/{booking_id}/quote/send")
-def send_quote(booking_id: str, request: Request,
+def send_quote(booking_id: str, request: Request, payload: QuoteEmailSendIn | None = None,
                session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
     membership, tenant = studio_write_context(session, db)
     booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
@@ -2532,15 +2741,46 @@ def send_quote(booking_id: str, request: Request,
         raise HTTPException(422, "Add at least one package before preparing the quote link")
     if journey.accepted_quote:
         raise HTTPException(409, "This quote has already been accepted")
-    quote.update({"status": "sent", "sent_at": utcnow().isoformat()})
+    mailbox = db.get(MailboxSetting, tenant.id)
+    if not mailbox or not mailbox.smtp_verified_at or not mailbox.smtp_password_encrypted:
+        raise HTTPException(409, "Verify the Studio outgoing email connection before sending this quote")
+    client = db.scalar(select(Client).where(
+        Client.id == booking.client_id, Client.tenant_id == tenant.id))
+    if not client:
+        raise HTTPException(404, "The enquiry contact could not be found")
+    copy = quote_email_copy(db, tenant, booking, journey)
+    subject = payload.subject.strip() if payload else copy["subject"]
+    body = payload.body.strip() if payload else copy["body"]
+    link = copy["portal_url"]
+    if link not in body and "{{client_portal_link}}" not in body:
+        body = f"{body.rstrip()}\n\nView your private quote here: {link}"
+    try:
+        message = send_tenant_email(
+            db, tenant, mailbox, client.email, subject, body,
+            booking=booking, client=client, template_id=copy["template_id"],
+            extra={"client_portal_link": link},
+        )
+    except Exception as exc:
+        audit(db, "quote_email_failed", "booking", booking.id, actor=session.user,
+              tenant_id=tenant.id, request=request,
+              detail={"error_type": type(exc).__name__})
+        db.commit()
+        raise HTTPException(422, "The quote email could not be sent. Check Email connection and try again") from exc
+    quote.update({"status": "sent", "sent_at": utcnow().isoformat(),
+                  "email_message_id": message.id})
     journey.quote_state = quote; booking.status = "awaiting_quote_acceptance"
+    enquiry = enquiry_for_journey(db, journey)
+    if enquiry and booking.is_provisional:
+        enquiry.status = "quote_sent"
     trigger_workflow(db, tenant, booking, "quote_sent")
-    audit(db, "quote_marked_sent", "booking", booking.id, actor=session.user,
+    audit(db, "quote_email_sent", "booking", booking.id, actor=session.user,
           tenant_id=tenant.id, request=request,
-          detail={"delivery": "link_prepared", "automatic_sending_paused": tenant.automations_paused})
+          detail={"recipient": client.email, "email_message_id": message.id,
+                  "automatic_sending_paused": tenant.automations_paused})
     db.commit()
     return {"ok": True, "portal_url": portal_url(journey),
-            "delivery": "copy_link", "automatic_email_sent": False}
+            "delivery": "email", "automatic_email_sent": True,
+            "email_message_id": message.id}
 
 
 def public_portal(raw_token: str, db: Session) -> tuple[Tenant, Booking, BookingJourney]:
@@ -2560,16 +2800,39 @@ def public_portal(raw_token: str, db: Session) -> tuple[Tenant, Booking, Booking
 
 
 @app.get("/api/public/portal/{raw_token}")
-def get_public_portal(raw_token: str, db: Session = Depends(get_db)):
+def get_public_portal(raw_token: str, request: Request, db: Session = Depends(get_db)):
     tenant, booking, journey = public_portal(raw_token, db)
+    quote_state = dict(journey.quote_state or {})
+    expired = False
+    if quote_state.get("status") == "sent" and quote_state.get("expires_on"):
+        try:
+            expired = date.fromisoformat(quote_state["expires_on"]) < date.today()
+        except (TypeError, ValueError):
+            expired = False
+    if expired:
+        quote_state["status"] = "expired"
+        journey.quote_state = quote_state
+        enquiry = enquiry_for_journey(db, journey)
+        if enquiry and booking.is_provisional:
+            enquiry.status = "quote_expired"
+        audit(db, "quote_expired", "booking", booking.id, tenant_id=tenant.id, request=request)
+        db.commit()
+    elif quote_state.get("status") == "sent" and not quote_state.get("viewed_at"):
+        quote_state["viewed_at"] = utcnow().isoformat()
+        journey.quote_state = quote_state
+        enquiry = enquiry_for_journey(db, journey)
+        if enquiry and booking.is_provisional:
+            enquiry.status = "quote_viewed"
+        audit(db, "quote_viewed", "booking", booking.id, tenant_id=tenant.id, request=request)
+        db.commit()
     data = journey_json(db, booking, journey, include_portal_url=False)
     data["business"] = {"display_name": (tenant.branding or {}).get("display_name") or tenant.display_name,
                         "accent_colour": (tenant.branding or {}).get("accent_colour") or "#a9782e",
                         "welcome_message": (tenant.branding or {}).get("welcome_message") or "Welcome to your private booking area."}
-    templates = db.scalars(select(QuestionnaireTemplate).where(
+    templates = [] if booking.is_provisional else db.scalars(select(QuestionnaireTemplate).where(
         QuestionnaireTemplate.tenant_id == tenant.id,
         QuestionnaireTemplate.is_active.is_(True)).order_by(QuestionnaireTemplate.form_type)).all()
-    submissions = db.scalars(select(QuestionnaireSubmission).where(
+    submissions = [] if booking.is_provisional else db.scalars(select(QuestionnaireSubmission).where(
         QuestionnaireSubmission.tenant_id == tenant.id,
         QuestionnaireSubmission.booking_id == booking.id)).all()
     submissions_by_type = {item.form_type: item for item in submissions}
@@ -2585,24 +2848,48 @@ def get_public_portal(raw_token: str, db: Session = Depends(get_db)):
 def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request,
                         db: Session = Depends(get_db)):
     tenant, booking, journey = public_portal(raw_token, db)
+    # Serialise acceptance on PostgreSQL so two near-simultaneous clicks cannot
+    # create two invoices for the same quote. SQLite safely ignores the hint.
+    journey = db.scalar(select(BookingJourney).where(
+        BookingJourney.booking_id == journey.booking_id,
+        BookingJourney.tenant_id == tenant.id).with_for_update())
+    if not journey:
+        raise HTTPException(404, "This private client area is not available")
     if journey.accepted_quote:
         raise HTTPException(409, "This quote has already been accepted")
     quote = dict(journey.quote_state or {})
     if quote.get("status") != "sent":
         raise HTTPException(409, "This quote is not ready to accept")
+    if quote.get("expires_on") and date.fromisoformat(quote["expires_on"]) < date.today():
+        quote["status"] = "expired"; journey.quote_state = quote
+        enquiry = enquiry_for_journey(db, journey)
+        if enquiry and booking.is_provisional:
+            enquiry.status = "quote_expired"
+        db.commit()
+        raise HTTPException(409, "This quote has expired. Please ask the studio for an updated quote")
     package = next((item for item in quote.get("packages", []) if item["id"] == payload.package_id), None)
     if not package:
         raise HTTPException(422, "Choose one of the available packages")
     offered_addons = {item["id"]: item for item in quote.get("add_ons", [])}
     selected_ids = set(payload.add_on_ids)
-    selected_ids.update(item["id"] for item in offered_addons.values() if item["selection_mode"] == "mandatory")
+    selected_ids.update(item["id"] for item in offered_addons.values()
+                        if item["selection_mode"] == "mandatory"
+                        and (not item.get("eligible_package_ids")
+                             or package["id"] in item.get("eligible_package_ids", [])))
     if any(item_id not in offered_addons for item_id in selected_ids):
         raise HTTPException(422, "Choose only the available extras")
-    selected_addons = [offered_addons[item_id] for item_id in selected_ids]
+    unavailable = [offered_addons[item_id]["name"] for item_id in selected_ids
+                   if offered_addons[item_id].get("eligible_package_ids")
+                   and package["id"] not in offered_addons[item_id]["eligible_package_ids"]]
+    if unavailable:
+        raise HTTPException(422, f"{unavailable[0]} is not available with {package['name']}")
+    selected_addons = [item for item in quote.get("add_ons", []) if item["id"] in selected_ids]
     line_items = [{"kind": "package", "label": package["name"], "price_pence": package["price_pence"]}]
     line_items += [{"kind": "add_on", "label": item["name"], "price_pence": item["price_pence"]} for item in selected_addons]
     line_items += [{"kind": "custom", **item} for item in quote.get("custom_items", [])]
     total = sum(int(item["price_pence"]) for item in line_items)
+    if total < 0:
+        raise HTTPException(422, "Discounts cannot reduce the accepted quote below £0")
     accepted = {"accepted_at": utcnow().isoformat(), "accepted_by": payload.client_name,
                 "package": package, "add_ons": selected_addons,
                 "custom_items": quote.get("custom_items", []), "line_items": line_items,
@@ -2622,6 +2909,12 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
                                                {"label": "Remaining balance", "amount_pence": max(0, total - journey.booking_fee_pence),
                                                 "due_date": journey.balance_due_date.isoformat() if journey.balance_due_date else None}])
     db.add(invoice); db.flush(); booking.status = "quote_accepted"
+    booking.is_provisional = False
+    booking.promoted_at = booking.promoted_at or utcnow()
+    enquiry = enquiry_for_journey(db, journey)
+    if enquiry:
+        enquiry.status = "booked"
+        cancel_open_enquiry_actions(db, tenant.id, enquiry.id, booking.id)
     trigger_workflow(db, tenant, booking, "quote_accepted")
     booking_fee_day = date.today() + timedelta(days=1)
     trigger_workflow(db, tenant, booking, "booking_fee_due",
@@ -2957,6 +3250,8 @@ def submit_questionnaire(raw_token: str, form_type: str,
                          payload: QuestionnaireSubmitIn, request: Request,
                          db: Session = Depends(get_db)):
     tenant, booking, journey = public_portal(raw_token, db)
+    if booking.is_provisional:
+        raise HTTPException(409, "Booking forms become available after the quote is accepted")
     template = db.scalar(select(QuestionnaireTemplate).where(
         QuestionnaireTemplate.tenant_id == tenant.id,
         QuestionnaireTemplate.form_type == form_type,
@@ -3645,6 +3940,7 @@ def studio_today(context=Depends(studio_context), db: Session = Depends(get_db))
     ).order_by(BookingInvoice.due_date).limit(50)).all()
     upcoming = db.scalars(select(Booking).where(
         Booking.tenant_id == tenant.id, Booking.event_date.is_not(None),
+        Booking.is_provisional.is_(False),
         Booking.event_date >= today, Booking.event_date <= today + timedelta(days=60),
         Booking.status.notin_(["cancelled", "archived"])
     ).order_by(Booking.event_date).limit(20)).all()
@@ -3718,7 +4014,7 @@ def studio_search(q: str = "", context=Depends(studio_context), db: Session = De
     if searched_date:
         booking_filters.append(Booking.event_date == searched_date)
     bookings = db.execute(select(Booking, Client).join(Client, Client.id == Booking.client_id).where(
-        Booking.tenant_id == tenant.id, or_(*booking_filters)
+        Booking.tenant_id == tenant.id, Booking.is_provisional.is_(False), or_(*booking_filters)
     ).limit(12)).all()
     for booking, client in bookings:
         results.append({"type": "booking", "id": booking.id, "title": booking.title,
@@ -3852,9 +4148,14 @@ def close_enquiry(enquiry_id: str, payload: EnquiryCloseIn, request: Request,
     row = db.scalar(select(Enquiry).where(Enquiry.id == enquiry_id, Enquiry.tenant_id == tenant.id))
     if not row:
         raise HTTPException(404, "Enquiry not found")
-    if row.status == "converted":
+    if row.status == "booked":
         raise HTTPException(409, "This enquiry is already a wedding journey")
     row.status = "closed"
+    journey = db.scalar(select(BookingJourney).where(
+        BookingJourney.tenant_id == tenant.id,
+        BookingJourney.enquiry_id == row.id))
+    cancel_open_enquiry_actions(db, tenant.id, row.id,
+                                journey.booking_id if journey else None)
     audit(db, "enquiry_closed", "enquiry", row.id, actor=session.user,
           tenant_id=tenant.id, request=request,
           detail={"outcome": payload.outcome, "note": payload.note})
@@ -3870,7 +4171,20 @@ def reopen_enquiry(enquiry_id: str, request: Request,
         raise HTTPException(404, "Enquiry not found")
     if row.status != "closed":
         raise HTTPException(409, "Only a closed enquiry can be reopened")
-    row.status = "new"
+    journey = db.scalar(select(BookingJourney).where(
+        BookingJourney.tenant_id == tenant.id,
+        BookingJourney.enquiry_id == row.id))
+    quote = dict(journey.quote_state or {}) if journey else {}
+    expired = False
+    if quote.get("expires_on"):
+        try:
+            expired = date.fromisoformat(quote["expires_on"]) < date.today()
+        except (TypeError, ValueError):
+            pass
+    row.status = ("quote_expired" if expired else
+                  "quote_viewed" if quote.get("viewed_at") else
+                  "quote_sent" if quote.get("status") == "sent" else
+                  "quote_draft" if quote.get("packages") else "new")
     audit(db, "enquiry_reopened", "enquiry", row.id, actor=session.user,
           tenant_id=tenant.id, request=request)
     db.commit(); return {"ok": True, "status": row.status}

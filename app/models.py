@@ -153,6 +153,10 @@ class Booking(Base):
     venue: Mapped[str | None] = mapped_column(String(240), nullable=True)
     venue_details: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(40), default="enquiry", index=True)
+    # Enquiries reuse the booking journey, portal and quote engine internally,
+    # but must not appear in Weddings until accepted or deliberately promoted.
+    is_provisional: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     client: Mapped[Client] = relationship()
 
@@ -191,6 +195,8 @@ class PackageAddOn(Base):
     price_pence: Mapped[int] = mapped_column(default=0)
     selection_mode: Mapped[str] = mapped_column(String(20), default="optional")
     mandatory_reason: Mapped[str] = mapped_column(String(300), default="")
+    # Empty means the add-on is available with every package.
+    eligible_package_ids: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

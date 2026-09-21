@@ -1,0 +1,28 @@
+PHASE 5.6 DUMMY JOURNEY
+
+Use the existing dummy enquiry for Sophie Bennett & Daniel Clarke, or submit a
+new enquiry using sales@ivorydigital.uk.
+
+[ ] Open Enquiries. The enquiry appears without manually refreshing the page.
+[ ] Choose Prepare quote. The enquiry remains under Enquiries.
+[ ] Confirm it does not appear under Weddings yet.
+[ ] Offer Test Package 1 and any suitable extras.
+[ ] Add a custom item or discount if required.
+[ ] Save quote draft. Confirm no email is sent.
+[ ] Choose Save & review email.
+[ ] Check the To address, subject, message and secure quote link.
+[ ] Choose Send quote now once.
+[ ] Open the received email and its secure quote link.
+[ ] Confirm no package is selected automatically.
+[ ] Select Test Package 1 and confirm only compatible extras appear.
+[ ] Accept the quote using the dummy couple's name.
+[ ] Return to Studio and open Enquiries. The record shows Booked.
+[ ] Open Weddings. The couple now appears there and has one invoice.
+
+Optional manual-promotion check:
+
+[ ] Create a second dummy enquiry.
+[ ] Open it in Enquiries and choose Mark as booked.
+[ ] Confirm the warning, then verify it appears under Weddings.
+
+Do not use a real couple until the full dummy journey passes.

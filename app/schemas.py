@@ -134,6 +134,7 @@ class AddOnIn(BaseModel):
     price_pence: int = Field(default=0, ge=0, le=10_000_000)
     selection_mode: Literal["optional", "mandatory"] = "optional"
     mandatory_reason: str = Field(default="", max_length=300)
+    eligible_package_ids: list[str] = Field(default_factory=list, max_length=40)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=10000)
 
@@ -248,12 +249,24 @@ class EnquiryConvertIn(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+class QuoteEmailSendIn(BaseModel):
+    subject: str = Field(min_length=1, max_length=220)
+    body: str = Field(min_length=1, max_length=30000)
+
+
 class QuoteDraftIn(BaseModel):
     package_ids: list[str] = Field(default_factory=list, max_length=20)
     add_on_ids: list[str] = Field(default_factory=list, max_length=60)
     custom_items: list[dict] = Field(default_factory=list, max_length=30)
     message: str = Field(default="", max_length=4000)
     expires_on: date | None = None
+
+    @field_validator("expires_on")
+    @classmethod
+    def validate_expiry(cls, value: date | None) -> date | None:
+        if value and value < date.today():
+            raise ValueError("Quote expiry cannot be in the past")
+        return value
 
     @field_validator("custom_items")
     @classmethod
@@ -264,8 +277,8 @@ class QuoteDraftIn(BaseModel):
             if not label:
                 continue
             price = int(item.get("price_pence", 0))
-            if price < 0 or price > 10_000_000:
-                raise ValueError("Custom item prices must be between £0 and £100,000")
+            if price < -10_000_000 or price > 10_000_000:
+                raise ValueError("Custom item values must be between -£100,000 and £100,000")
             cleaned.append({"label": label, "price_pence": price})
         return cleaned
 
