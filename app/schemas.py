@@ -104,6 +104,7 @@ class BrandingPatchIn(BaseModel):
 class PackageIn(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     short_description: str = Field(default="", max_length=300)
+    full_description: str = Field(default="", max_length=20000)
     price_pence: int = Field(ge=0, le=10_000_000)
     booking_fee_pence: int = Field(default=10000, ge=0, le=10_000_000)
     balance_due_days: int = Field(default=45, ge=0, le=730)
@@ -134,6 +135,7 @@ class AddOnIn(BaseModel):
     price_pence: int = Field(default=0, ge=0, le=10_000_000)
     selection_mode: Literal["optional", "mandatory"] = "optional"
     mandatory_reason: str = Field(default="", max_length=300)
+    is_discount: bool = False
     eligible_package_ids: list[str] = Field(default_factory=list, max_length=40)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=10000)
@@ -280,7 +282,11 @@ class QuoteDraftIn(BaseModel):
             price = int(item.get("price_pence", 0))
             if price < -10_000_000 or price > 10_000_000:
                 raise ValueError("Custom item values must be between -£100,000 and £100,000")
-            cleaned.append({"label": label, "price_pence": price})
+            cleaned_item = {"label": label, "price_pence": price}
+            catalog_id = str(item.get("catalog_add_on_id", "")).strip()[:36]
+            if catalog_id:
+                cleaned_item["catalog_add_on_id"] = catalog_id
+            cleaned.append(cleaned_item)
         return cleaned
 
 

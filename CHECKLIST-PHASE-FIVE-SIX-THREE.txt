@@ -1,0 +1,90 @@
+PHASE 5.6.3 — POST-DEPLOY CHECKLIST
+
+Expected build:
+2026.09.21-phase-five-six-three-catalogue-layout
+
+Do not begin until the three final curl checks in the deployment guide show the
+expected build and asset version.
+
+
+1. PACKAGES & PRICING
+
+[ ] Open Packages & pricing.
+[ ] Confirm package cards are large, readable and show wording, deposit, order,
+    balance timing, visibility and price.
+[ ] Edit a package and confirm the editor includes:
+    package name, full price, booking fee/deposit, display position, visibility,
+    balance due days, featured choice, short summary, full package wording and
+    optional information URL.
+[ ] Save several paragraphs/bullet lines in Full package wording and reopen the
+    editor to prove they were stored.
+[ ] Create an ordinary add-on and restrict it to one package.
+[ ] Create a compulsory add-on and enter the reason it is compulsory.
+[ ] Create a reusable private discount.
+[ ] Confirm the private discount is clearly identified and is not treated as a
+    public client add-on.
+
+
+2. ENQUIRY AND QUOTE
+
+[ ] Submit a dummy enquiry.
+[ ] Confirm it remains visible and openable in Enquiries.
+[ ] Open it and prepare a quote without first turning it into a Wedding.
+[ ] Confirm the quote workspace is wide and readable on desktop.
+[ ] Offer at least one package.
+[ ] Include the restricted add-on and confirm its package eligibility is clear.
+[ ] Mark an included add-on optional, then compulsory, for this quote.
+[ ] Include the saved private discount.
+[ ] Save the quote as a draft and reopen it.
+[ ] Confirm packages, add-ons, compulsory choices, discount and message remain.
+[ ] Review the email and send the quote.
+
+
+3. COUPLE PORTAL AND BOOKING TRANSITION
+
+[ ] Open the private quote link as the dummy couple.
+[ ] Confirm the full package wording is readable.
+[ ] Confirm compulsory extras are locked and the discount reduces the total.
+[ ] Accept the quote.
+[ ] Confirm only now does the enquiry become a Wedding/job.
+[ ] Confirm the accepted package, add-ons, discount and total remain visible.
+
+
+4. CATALOGUE HISTORY SAFETY
+
+[ ] Create a temporary package and temporary add-on.
+[ ] Delete both and confirm they disappear from future quote preparation.
+[ ] Reopen the already accepted dummy booking.
+[ ] Confirm its accepted quote snapshot is unchanged.
+
+
+5. EMAIL TEMPLATES AND SCHEDULED EMAILS
+
+[ ] Open Email templates from the left navigation.
+[ ] Confirm the included starter templates are present.
+[ ] Create, edit and delete a test email template.
+[ ] Open Emails & workflow.
+[ ] Create wedding check-in emails at 120, 90, 60 and 30 days as required.
+[ ] Confirm automatic/review/disabled behaviour is selectable.
+[ ] Confirm the Final Timings form option is available only at 30 days.
+
+
+6. BRAND, FORMS AND CONTRACT
+
+[ ] Upload or replace the business logo in Business & brand.
+[ ] Confirm email signature/branding can use it.
+[ ] Complete the Booking Questionnaire from the private link.
+[ ] Complete the Final Wedding Timings form from the private link.
+[ ] Sign the contract as the couple.
+[ ] Confirm the system countersigns automatically.
+[ ] Confirm the couple receives the completed PDF agreement email.
+
+
+7. FINAL RESULT
+
+[ ] No browser refresh was needed to reveal a saved change.
+[ ] Enquiries stayed in Enquiries until quote acceptance.
+[ ] Existing accepted quote history survived catalogue edits/deletion.
+[ ] Studio, Client and Worker containers remain healthy.
+[ ] Keep the Phase 5.6.3 database backup until every item above passes.
+

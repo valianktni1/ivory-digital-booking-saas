@@ -60,8 +60,10 @@ def test_phase_five_three_additive_column_upgrade():
         booking_columns = {row[1] for row in session.execute(text("PRAGMA table_info(bookings)"))}
         calendar_columns = {row[1] for row in session.execute(text("PRAGMA table_info(tenant_calendar_connections)"))}
     assert "information_url" in package_columns
+    assert "full_description" in package_columns
     assert "information_url" in add_on_columns
     assert "eligible_package_ids" in add_on_columns
+    assert "is_discount" in add_on_columns
     assert "venue_details" in enquiry_columns
     assert "venue_details" in booking_columns
     assert "is_provisional" in booking_columns
@@ -203,6 +205,7 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
 
         package = alpha_client.post("/api/studio/packages", headers=csrf(alpha_client), json={
             "name": "Story Collection", "short_description": "A full wedding story",
+            "full_description": "Full Day Photography\n\n• Up to 8 hours coverage\n• Online gallery",
             "information_url": "https://alpha.example/story-collection",
             "price_pence": 149500, "booking_fee_pence": 10000,
             "balance_due_days": 45, "inclusions": ["Photography", "Online gallery"],
@@ -210,6 +213,7 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         })
         assert package.status_code == 201, package.text
         assert package.json()["information_url"] == "https://alpha.example/story-collection"
+        assert "Up to 8 hours coverage" in package.json()["full_description"]
         assert len(alpha_client.get("/api/studio/packages").json()) == 1
         assert beta_client.get("/api/studio/packages").json() == []
         cross_package = beta_client.patch(
@@ -235,6 +239,23 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert optional.status_code == 201
         assert optional.json()["information_url"] == "https://alpha.example/wedding-albums"
         assert optional.json()["eligible_package_ids"] == [package.json()["id"]]
+        private_discount = alpha_client.post(
+            "/api/studio/add-ons", headers=csrf(alpha_client), json={
+                "name": "Wedding fair discount", "description": "Private reusable offer",
+                "price_pence": 5000, "is_discount": True,
+                "selection_mode": "optional", "eligible_package_ids": [package.json()["id"]],
+                "is_active": True, "sort_order": 2,
+            },
+        )
+        assert private_discount.status_code == 201, private_discount.text
+        assert private_discount.json()["is_discount"] is True
+        compulsory_discount = alpha_client.post(
+            "/api/studio/add-ons", headers=csrf(alpha_client), json={
+                "name": "Invalid discount", "price_pence": 1000, "is_discount": True,
+                "selection_mode": "mandatory", "mandatory_reason": "Still invalid",
+            },
+        )
+        assert compulsory_discount.status_code == 422
         assert beta_client.get("/api/studio/add-ons").json() == []
 
         forms = alpha_client.get("/api/studio/questionnaire-templates")
@@ -397,12 +418,22 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
             f"/api/studio/bookings/{booking_id}/quote", headers=csrf(alpha_client), json={
                 "package_ids": [package.json()["id"]], "add_on_ids": [optional.json()["id"]],
                 "required_add_on_ids": [optional.json()["id"]],
-                "custom_items": [{"label": "Travel", "price_pence": 2500}],
+                "custom_items": [
+                    {"label": "Wedding fair discount", "price_pence": -1,
+                     "catalog_add_on_id": private_discount.json()["id"]},
+                    {"label": "Travel", "price_pence": 2500},
+                ],
                 "message": "Choose the collection that feels right.",
             },
         )
         assert quote.status_code == 200, quote.text
         assert quote.json()["quote"]["add_ons"][0]["selection_mode"] == "mandatory"
+        saved_discount = next(
+            item for item in quote.json()["quote"]["custom_items"]
+            if item.get("catalog_add_on_id") == private_discount.json()["id"]
+        )
+        assert saved_discount["label"] == "Wedding fair discount"
+        assert saved_discount["price_pence"] == -5000
         assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_draft"
         preview = alpha_client.get(
             f"/api/studio/bookings/{booking_id}/quote/email-preview"
@@ -478,7 +509,7 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert accepted_quote.json()["contract_ready"] is True
         invoice = accepted_quote.json()["invoice"]
         assert invoice["number"] == "INV-00001"
-        assert invoice["total_pence"] == 149500 + 2500
+        assert invoice["total_pence"] == 149500 + 2500 - 5000
         booked_enquiry = alpha_client.get("/api/studio/enquiries").json()[0]
         assert booked_enquiry["status"] == "booked"
         assert booked_enquiry["is_provisional"] is False
@@ -815,6 +846,34 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert alpha_client.post(
             f"/api/studio/enquiries/{second_id}/reopen", headers=csrf(alpha_client),
         ).json()["status"] == "new"
+
+        # Catalogue rows can be removed without rewriting the fixed quote accepted earlier.
+        assert beta_client.delete(
+            f"/api/studio/add-ons/{optional.json()['id']}", headers=csrf(beta_client),
+        ).status_code == 404
+        removed_add_on = alpha_client.delete(
+            f"/api/studio/add-ons/{optional.json()['id']}", headers=csrf(alpha_client),
+        )
+        assert removed_add_on.status_code == 200, removed_add_on.text
+        assert all(row["id"] != optional.json()["id"]
+                   for row in alpha_client.get("/api/studio/add-ons").json())
+        assert beta_client.delete(
+            f"/api/studio/packages/{package.json()['id']}", headers=csrf(beta_client),
+        ).status_code == 404
+        removed_package = alpha_client.delete(
+            f"/api/studio/packages/{package.json()['id']}", headers=csrf(alpha_client),
+        )
+        assert removed_package.status_code == 200, removed_package.text
+        remaining_discount = next(
+            row for row in alpha_client.get("/api/studio/add-ons").json()
+            if row["id"] == private_discount.json()["id"]
+        )
+        assert remaining_discount["eligible_package_ids"] == []
+        accepted_after_catalogue_delete = manager.get(
+            f"/api/public/portal/{portal_token}"
+        ).json()["accepted_quote"]
+        assert accepted_after_catalogue_delete["package"]["name"] == "Story Collection"
+        assert accepted_after_catalogue_delete["add_ons"][0]["name"] == "Complimentary album"
 
         public = manager.get("/api/public/business/alpha-weddings")
         assert public.status_code == 200

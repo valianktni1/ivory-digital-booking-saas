@@ -517,8 +517,10 @@ def ensure_compatibility_columns(db: Session) -> None:
         return
     if db.bind.dialect.name == "postgresql":
         db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS full_description TEXT NOT NULL DEFAULT ''"))
         db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
         db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS eligible_package_ids JSON NOT NULL DEFAULT '[]'::json"))
+        db.execute(text("ALTER TABLE package_add_ons ADD COLUMN IF NOT EXISTS is_discount BOOLEAN NOT NULL DEFAULT FALSE"))
         db.execute(text("ALTER TABLE enquiries ADD COLUMN IF NOT EXISTS venue_details JSON NOT NULL DEFAULT '{}'::json"))
         db.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS venue_details JSON NOT NULL DEFAULT '{}'::json"))
         db.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS is_provisional BOOLEAN NOT NULL DEFAULT FALSE"))
@@ -530,9 +532,14 @@ def ensure_compatibility_columns(db: Session) -> None:
             columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
             if "information_url" not in columns:
                 db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
+        package_columns = {row[1] for row in db.execute(text("PRAGMA table_info(service_packages)"))}
+        if package_columns and "full_description" not in package_columns:
+            db.execute(text("ALTER TABLE service_packages ADD COLUMN full_description TEXT NOT NULL DEFAULT ''"))
         add_on_columns = {row[1] for row in db.execute(text("PRAGMA table_info(package_add_ons)"))}
         if add_on_columns and "eligible_package_ids" not in add_on_columns:
             db.execute(text("ALTER TABLE package_add_ons ADD COLUMN eligible_package_ids JSON NOT NULL DEFAULT '[]'"))
+        if add_on_columns and "is_discount" not in add_on_columns:
+            db.execute(text("ALTER TABLE package_add_ons ADD COLUMN is_discount BOOLEAN NOT NULL DEFAULT 0"))
         for table_name in ("enquiries", "bookings"):
             columns = {row[1] for row in db.execute(text(f"PRAGMA table_info({table_name})"))}
             if columns and "venue_details" not in columns:
@@ -624,7 +631,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6.2-scheduled-emails",
+    version="0.5.6.3-catalogue-layout",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -692,7 +699,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.21-phase-five-six-two-scheduled-emails", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.21-phase-five-six-three-catalogue-layout", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1479,6 +1486,7 @@ def ask_studio_help(payload: HelpAskIn, _session: UserSession = Depends(require_
 
 def package_json(row: ServicePackage) -> dict:
     return {"id": row.id, "name": row.name, "short_description": row.short_description,
+            "full_description": row.full_description or "",
             "price_pence": row.price_pence, "booking_fee_pence": row.booking_fee_pence,
             "balance_due_days": row.balance_due_days, "inclusions": row.inclusions or [],
             "information_url": row.information_url or "",
@@ -1491,6 +1499,7 @@ def add_on_json(row: PackageAddOn) -> dict:
             "information_url": row.information_url or "",
             "price_pence": row.price_pence, "selection_mode": row.selection_mode,
             "mandatory_reason": row.mandatory_reason,
+            "is_discount": row.is_discount,
             "eligible_package_ids": row.eligible_package_ids or [],
             "is_active": row.is_active,
             "sort_order": row.sort_order}
@@ -1583,6 +1592,8 @@ def validate_package(payload: PackageIn) -> None:
 
 
 def validate_add_on(payload: AddOnIn) -> None:
+    if payload.is_discount and payload.selection_mode == "mandatory":
+        raise HTTPException(422, "A private discount cannot be compulsory")
     if payload.selection_mode == "mandatory" and not payload.mandatory_reason:
         raise HTTPException(422, "Explain why this add-on is mandatory for the couple")
 
@@ -1802,6 +1813,31 @@ def update_package(package_id: str, payload: PackageIn, request: Request,
     return package_json(row)
 
 
+@app.delete("/api/studio/packages/{package_id}")
+def delete_package(package_id: str, request: Request,
+                   session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(ServicePackage).where(
+        ServicePackage.id == package_id,
+        ServicePackage.tenant_id == membership.tenant_id,
+    ))
+    if not row:
+        raise HTTPException(404, "Package not found")
+    add_ons = db.scalars(select(PackageAddOn).where(
+        PackageAddOn.tenant_id == tenant.id,
+    )).all()
+    for add_on in add_ons:
+        if package_id in (add_on.eligible_package_ids or []):
+            add_on.eligible_package_ids = [
+                item for item in add_on.eligible_package_ids if item != package_id
+            ]
+    audit(db, "package_deleted", "service_package", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"name": row.name})
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/studio/add-ons")
 def list_add_ons(context=Depends(studio_context), db: Session = Depends(get_db)):
     _, _, tenant = context
@@ -1838,6 +1874,23 @@ def update_add_on(add_on_id: str, payload: AddOnIn, request: Request,
           tenant_id=tenant.id, request=request)
     db.commit()
     return add_on_json(row)
+
+
+@app.delete("/api/studio/add-ons/{add_on_id}")
+def delete_add_on(add_on_id: str, request: Request,
+                  session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(PackageAddOn).where(
+        PackageAddOn.id == add_on_id,
+        PackageAddOn.tenant_id == membership.tenant_id,
+    ))
+    if not row:
+        raise HTTPException(404, "Add-on not found")
+    audit(db, "add_on_deleted", "package_add_on", row.id, actor=session.user,
+          tenant_id=tenant.id, request=request, detail={"name": row.name})
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/studio/workflows")
@@ -2844,9 +2897,10 @@ def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
         ServicePackage.is_active.is_(True))).all() if payload.package_ids else []
     if len(package_rows) != len(set(payload.package_ids)):
         raise HTTPException(422, "One of the selected packages is no longer available")
-    add_on_rows = db.scalars(select(PackageAddOn).where(
+    catalogue_rows = db.scalars(select(PackageAddOn).where(
         PackageAddOn.tenant_id == tenant_id,
         PackageAddOn.is_active.is_(True))).all()
+    add_on_rows = [item for item in catalogue_rows if not item.is_discount]
     allowed_addons = {item.id: item for item in add_on_rows}
     selected_ids = set(payload.add_on_ids)
     required_ids = set(payload.required_add_on_ids)
@@ -2877,9 +2931,25 @@ def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
             snapshot["selection_mode"] = "optional"
             snapshot["required_for_quote"] = False
         add_on_snapshots.append(snapshot)
+    discount_rows = {item.id: item for item in catalogue_rows if item.is_discount}
+    custom_items = []
+    for item in payload.custom_items:
+        discount_id = item.get("catalog_add_on_id")
+        if not discount_id:
+            custom_items.append(item)
+            continue
+        discount = discount_rows.get(discount_id)
+        if not discount:
+            raise HTTPException(422, "One of the selected private discounts is no longer available")
+        if (discount.eligible_package_ids
+                and not (offered_packages & set(discount.eligible_package_ids))):
+            raise HTTPException(422, f"{discount.name} is not available with any offered package")
+        custom_items.append({"label": discount.name,
+                             "price_pence": -abs(discount.price_pence),
+                             "catalog_add_on_id": discount.id})
     return {"status": "draft", "packages": [package_json(item) for item in package_rows],
             "add_ons": add_on_snapshots,
-            "custom_items": payload.custom_items, "message": payload.message,
+            "custom_items": custom_items, "message": payload.message,
             "expires_on": payload.expires_on.isoformat() if payload.expires_on else None,
             "updated_at": utcnow().isoformat()}
 

@@ -1,0 +1,123 @@
+PHASE 5.6.3 — FULL CATALOGUE CUSTOMISATION + GUARDED DEPLOYMENT
+
+IMPORTANT
+
+This is a complete release. Deploy this ZIP instead of Phase 5.6.2. Copy ALL
+project files into the local Git repository, not only these instruction files.
+
+The expected build is:
+
+2026.09.21-phase-five-six-three-catalogue-layout
+
+
+PART A — LOCAL COMPUTER AND GITHUB
+
+1. Extract the full Phase 5.6.3 ZIP.
+2. Copy ALL extracted project files into the local Ivory Digital repository.
+3. Review the changes, commit them, and PUSH the commit.
+4. Open the repository on GitHub in a browser. Confirm all of these are visible:
+
+   app/main.py contains:
+   phase-five-six-three-catalogue-layout
+
+   studio/index.html contains:
+   phase-five-six-three-catalogue-layout
+
+   client/index.html contains:
+   phase-five-six-three-catalogue-layout
+
+   studio/Dockerfile contains:
+   v55.css v55.js
+
+Do not continue until GitHub itself shows all four checks. A local commit that was
+not pushed cannot reach TrueNAS.
+
+
+PART B — PROVE THE TRUENAS CHECKOUT IS THE RIGHT REPOSITORY
+
+Run this in the TrueNAS shell:
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+
+sudo git status --short
+sudo git branch --show-current
+sudo git log -1 --oneline --decorate
+sudo git remote -v
+sudo git pull --ff-only
+
+grep -n "phase-five-six-three-catalogue-layout" app/main.py studio/index.html client/index.html
+grep -n "v55.css v55.js" studio/Dockerfile
+
+The first grep MUST print a match from all three files. The second MUST print the
+Studio Dockerfile COPY line. If either check is missing, STOP. Do not build: the
+TrueNAS folder is on the wrong branch, wrong remote, or has not received the push.
+
+
+PART C — DATABASE BACKUP
+
+PHASE563_BACKUP="/mnt/apps/dockge/data/tenantsbookingsystem2026/ivory-booking-before-phase563-$(date +%Y%m%d-%H%M%S).dump"
+
+sudo docker exec tenantsbookingsystem2026-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$PHASE563_BACKUP"
+
+sudo ls -lh "$PHASE563_BACKUP"
+
+Do not continue unless the backup exists and has a sensible non-zero size.
+
+
+PART D — BUILD, THEN PROVE THE IMAGES BEFORE REPLACING CONTAINERS
+
+sudo docker compose -f compose.yaml build --pull --no-cache backend worker studio client
+
+sudo docker run --rm --entrypoint sh tenantsbookingsystem2026-backend -c "grep -q 'phase-five-six-three-catalogue-layout' /app/app/main.py && echo 'Backend image: Phase 5.6.3 confirmed'"
+
+sudo docker run --rm --entrypoint sh tenantsbookingsystem2026-studio -c "grep -q 'phase-five-six-three-catalogue-layout' /usr/share/nginx/html/index.html && test -f /usr/share/nginx/html/v55.css && test -f /usr/share/nginx/html/v55.js && echo 'Studio image: Phase 5.6.3 confirmed'"
+
+sudo docker run --rm --entrypoint sh tenantsbookingsystem2026-client -c "grep -q 'phase-five-six-three-catalogue-layout' /usr/share/nginx/html/index.html && echo 'Client image: Phase 5.6.3 confirmed'"
+
+All three commands MUST say Phase 5.6.3 confirmed. If one does not, STOP. The
+running containers have not been touched, so it is safe to investigate the build.
+
+
+PART E — RECREATE THE RUNNING SERVICES
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate backend
+
+for attempt in $(seq 1 30); do backend_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-backend 2>/dev/null || true); echo "Backend: $backend_health"; test "$backend_health" = "healthy" && break; sleep 2; done
+
+test "$backend_health" = "healthy"
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate worker studio client
+
+for attempt in $(seq 1 30); do studio_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-studio 2>/dev/null || true); client_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-client 2>/dev/null || true); worker_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-worker 2>/dev/null || true); echo "Studio: $studio_health | Client: $client_health | Worker: $worker_health"; test "$studio_health" = "healthy" -a "$client_health" = "healthy" -a "$worker_health" = "healthy" && break; sleep 2; done
+
+sudo docker compose -f compose.yaml ps
+
+
+PART F — PROVE THE RUNNING CONTAINERS, THEN THE PUBLIC SITES
+
+sudo docker exec tenantsbookingsystem2026-backend sh -c "grep -q 'phase-five-six-three-catalogue-layout' /app/app/main.py && echo 'Running backend: Phase 5.6.3 confirmed'"
+
+sudo docker exec tenantsbookingsystem2026-studio sh -c "grep -q 'phase-five-six-three-catalogue-layout' /usr/share/nginx/html/index.html && test -f /usr/share/nginx/html/v55.css && test -f /usr/share/nginx/html/v55.js && echo 'Running Studio: Phase 5.6.3 confirmed'"
+
+sudo docker exec tenantsbookingsystem2026-client sh -c "grep -q 'phase-five-six-three-catalogue-layout' /usr/share/nginx/html/index.html && echo 'Running Client: Phase 5.6.3 confirmed'"
+
+curl -fsS https://studio.ivorydigital.uk/api/health && echo
+curl -fsS https://studio.ivorydigital.uk/ | grep -o 'phase-five-six-three-catalogue-layout' | head -1
+curl -fsS https://client.ivorydigital.uk/ | grep -o 'phase-five-six-three-catalogue-layout' | head -1
+
+Expected final output:
+
+{"status":"ok","build":"2026.09.21-phase-five-six-three-catalogue-layout","service":"ivory-booking-saas"}
+phase-five-six-three-catalogue-layout
+phase-five-six-three-catalogue-layout
+
+If the container checks pass but a public URL still prints the previous build,
+the fault is in the reverse proxy route or an upstream proxy cache—not Git,
+Docker, the browser, or the application image.
+
+
+PART G — DUMMY JOURNEY
+
+Run CHECKLIST-PHASE-FIVE-SIX-THREE.txt before using a real enquiry. Keep the
+database backup until the complete dummy journey passes.
+

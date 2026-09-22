@@ -170,6 +170,7 @@ class ServicePackage(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(160))
     short_description: Mapped[str] = mapped_column(String(300), default="")
+    full_description: Mapped[str] = mapped_column(Text, default="")
     price_pence: Mapped[int] = mapped_column(default=0)
     booking_fee_pence: Mapped[int] = mapped_column(default=10000)
     balance_due_days: Mapped[int] = mapped_column(default=45)
@@ -195,6 +196,7 @@ class PackageAddOn(Base):
     price_pence: Mapped[int] = mapped_column(default=0)
     selection_mode: Mapped[str] = mapped_column(String(20), default="optional")
     mandatory_reason: Mapped[str] = mapped_column(String(300), default="")
+    is_discount: Mapped[bool] = mapped_column(Boolean, default=False)
     # Empty means the add-on is available with every package.
     eligible_package_ids: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -95,11 +95,14 @@ def test_phase55_frontends_and_security_policy_are_wired():
     assert "venue_details" in client and "IvoryPlaces" in client
     assert "PlaceAutocompleteElement" in places and "includedRegionCodes" in places
     assert "Use this calendar" in studio and "Get directions" in studio
-    assert "/places.js?v=phase-five-six-two-scheduled-emails" in client_html
-    assert "/v55.js?v=phase-five-six-two-scheduled-emails" in studio_html
+    assert "/places.js?v=phase-five-six-three-catalogue-layout" in client_html
+    assert "/v55.js?v=phase-five-six-three-catalogue-layout" in studio_html
     assert "#final-timings" in client
     assert "questionnaire-final_timings" in client
     assert "＋ New email" in studio_v54
     assert "const allowedDays=[120,90,60,30]" in studio_v54
+    assert "full package wording" in (ROOT / "studio/index.html").read_text(encoding="utf-8").lower()
+    assert "Private reusable discount" in (ROOT / "studio/index.html").read_text(encoding="utf-8")
+    assert "v55.css v55.js" in (ROOT / "studio/Dockerfile").read_text(encoding="utf-8")
     assert "https://places.googleapis.com" in nginx
     assert "frame-ancestors https:" in nginx
