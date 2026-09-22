@@ -12,7 +12,7 @@ from app import messaging as messaging_module
 from app.database import SessionLocal
 from app.main import app, ensure_compatibility_columns, ensure_public_mail_host
 from app.messaging import send_tenant_email as real_send_tenant_email
-from app.models import EmailMessage, MailboxSetting
+from app.models import EmailMessage, MailboxSetting, WorkflowAction
 from app.security import encrypt_secret, utcnow
 from app.worker import process_billing_statuses
 
@@ -316,10 +316,19 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
             },
         )
         assert check_in.status_code == 201, check_in.text
+        sixty_day_final_timings = alpha_client.post(
+            f"/api/studio/workflows/{workflow['id']}/steps", headers=csrf(alpha_client), json={
+                "name": "60-day final timings", "trigger_event": "wedding_date",
+                "timing_direction": "before", "offset_value": 60, "offset_unit": "days",
+                "action_type": "email", "subject": "Final timings",
+                "message_body": "Please complete this now: {{final_timings_link}}",
+            },
+        )
+        assert sixty_day_final_timings.status_code == 201, sixty_day_final_timings.text
         too_early_final_timings = alpha_client.post(
             f"/api/studio/workflows/{workflow['id']}/steps", headers=csrf(alpha_client), json={
                 "name": "Too-early final timings", "trigger_event": "wedding_date",
-                "timing_direction": "before", "offset_value": 60, "offset_unit": "days",
+                "timing_direction": "before", "offset_value": 90, "offset_unit": "days",
                 "action_type": "email", "subject": "Final timings",
                 "message_body": "Please complete this now: {{final_timings_link}}",
             },
@@ -602,7 +611,20 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert check_in_action["status"] == "paused"
         assert check_in_action["due_at"].startswith(expected_check_in.isoformat().replace("+00:00", ""))
         accepted_portal = manager.get(f"/api/public/portal/{portal_token}").json()
-        assert {row["form_type"] for row in accepted_portal["available_questionnaires"]} == {
+        assert {row["form_type"] for row in accepted_portal["available_questionnaires"]} == {"booking"}
+        locked_final_timings = manager.post(
+            f"/api/public/portal/{portal_token}/questionnaires/final_timings",
+            json={"answers": {}},
+        )
+        assert locked_final_timings.status_code == 409
+        assert "timings request email" in locked_final_timings.json()["detail"]
+        with SessionLocal() as db:
+            delivered_final_timings = db.get(WorkflowAction, final_action["id"])
+            delivered_final_timings.status = "sent"
+            delivered_final_timings.completed_at = utcnow()
+            db.commit()
+        released_portal = manager.get(f"/api/public/portal/{portal_token}").json()
+        assert {row["form_type"] for row in released_portal["available_questionnaires"]} == {
             "booking", "final_timings"
         }
         assert all(action["status"] == "cancelled"

@@ -1,0 +1,13 @@
+PHASE 5.6.5 - FINAL TIMINGS CHECKLIST
+
+1. Accept a test quote.
+2. Refresh the private client area.
+3. Confirm the Booking Questionnaire is visible.
+4. Confirm Final Wedding Timings is not visible.
+5. In Emails & workflow, create or edit a wedding-date email.
+6. Choose 60 days or 30 days before the wedding.
+7. Tick Include the Final Timings form and choose review or automatic sending.
+8. After the test email has actually sent, open its secure button.
+9. Confirm Final Wedding Timings is now visible for that couple.
+10. Confirm other couples whose timing email has not sent still cannot see it.
+

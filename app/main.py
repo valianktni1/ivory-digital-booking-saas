@@ -205,7 +205,7 @@ DEFAULT_HELP_ARTICLES = (
         "category": "Emails & workflow", "contexts": ["workflow", "weddings"], "tour_key": "workflow",
         "keywords": ["check in", "scheduled email", "120 days", "90 days", "60 days", "30 days", "final timings"],
         "summary": "Create separate emails for 120, 90, 60 or 30 days before the wedding.",
-        "body": "Open Emails & workflow and choose New email. Pick 120, 90, 60 or 30 days before the wedding, write the message or start from a saved template, then choose whether it waits for review or sends automatically.\n\nYou can add several emails — for example one at 120 days, another at 60 days and another at 30 days. The Final Timings form option is available only for the 30-day email. It adds a secure button that opens that couple's actual Final Timings questionnaire.",
+        "body": "Open Emails & workflow and choose New email. Pick 120, 90, 60 or 30 days before the wedding, write the message or start from a saved template, then choose whether it waits for review or sends automatically.\n\nYou can add several emails — for example one at 120 days, another at 60 days and another at 30 days. The Final Timings form can be included in either the 60-day or 30-day email. It stays hidden from the couple until that email is successfully sent, then the secure button opens their actual Final Timings questionnaire.",
         "action_label": "Open emails & workflow", "action_route": "workflow", "sort_order": 105,
     },
     {
@@ -631,7 +631,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6.4-quote-templates",
+    version="0.5.6.5-final-timings-gate",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -699,7 +699,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.22-phase-five-six-four-quote-templates", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.22-phase-five-six-five-final-timings-gate", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1659,16 +1659,16 @@ def validate_quote_template(db: Session, tenant_id: str, payload: QuoteTemplateI
 def validate_workflow_step(payload: WorkflowStepIn) -> None:
     if "{{final_timings_link}}" not in payload.message_body:
         return
-    is_thirty_day_email = (
+    is_final_timings_email = (
         payload.action_type == "email"
         and payload.trigger_event == "wedding_date"
         and payload.timing_direction == "before"
         and payload.offset_unit == "days"
-        and payload.offset_value == 30
+        and payload.offset_value in {30, 60}
     )
-    if not is_thirty_day_email:
+    if not is_final_timings_email:
         raise HTTPException(
-            422, "The Final Timings form can only be included in an email 30 days before the wedding"
+            422, "The Final Timings form can only be included in an email 30 or 60 days before the wedding"
         )
 
 
@@ -2542,7 +2542,33 @@ def questionnaire_json(row: QuestionnaireTemplate, submission: QuestionnaireSubm
             "is_active": row.is_active,
             "submission": ({"answers": submission.answers or {},
                             "submitted_at": submission.submitted_at.isoformat()}
-                           if submission else None)}
+                            if submission else None)}
+
+
+def final_timings_released(db: Session, booking: Booking) -> bool:
+    """Reveal Final Timings only after its invitation email was actually sent.
+
+    A previous submission also keeps the form available so a couple can safely
+    return and update timings even if an old workflow action is later removed.
+    The final_timings_link fallback recognises actions created by Phase 5.6.4.
+    """
+    submitted = db.scalar(select(QuestionnaireSubmission.id).where(
+        QuestionnaireSubmission.tenant_id == booking.tenant_id,
+        QuestionnaireSubmission.booking_id == booking.id,
+        QuestionnaireSubmission.form_type == "final_timings",
+    ).limit(1))
+    if submitted:
+        return True
+    sent_actions = db.scalars(select(WorkflowAction).where(
+        WorkflowAction.tenant_id == booking.tenant_id,
+        WorkflowAction.booking_id == booking.id,
+        WorkflowAction.status == "sent",
+    )).all()
+    return any(
+        (action.payload or {}).get("release_questionnaire_form_type") == "final_timings"
+        or bool((action.payload or {}).get("final_timings_link"))
+        for action in sent_actions
+    )
 
 
 def journey_json(db: Session, booking: Booking, journey: BookingJourney,
@@ -2668,6 +2694,7 @@ def trigger_workflow(db: Session, tenant: Tenant, booking: Booking,
             final_link = f"{portal_url(journey)}#final-timings"
             action_payload.update({"client_portal_link": final_link,
                                    "final_timings_link": final_link,
+                                   "release_questionnaire_form_type": "final_timings",
                                    "action_label": "Complete your final timings"})
         elif step.action_type == "email" and "{{client_portal_link}}" in step.message_body:
             action_payload.update({"client_portal_link": portal_url(journey),
@@ -3331,6 +3358,10 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
         questionnaire_query = questionnaire_query.where(
             QuestionnaireTemplate.form_type.in_(allowed_questionnaires)
         )
+    if not final_timings_released(db, booking):
+        questionnaire_query = questionnaire_query.where(
+            QuestionnaireTemplate.form_type != "final_timings"
+        )
     templates = [] if booking.is_provisional else db.scalars(
         questionnaire_query.order_by(QuestionnaireTemplate.form_type)
     ).all()
@@ -3817,6 +3848,17 @@ def submit_questionnaire(raw_token: str, form_type: str,
     tenant, booking, journey = public_portal(raw_token, db)
     if booking.is_provisional:
         raise HTTPException(409, "Booking forms become available after the quote is accepted")
+    allowed_questionnaires = (journey.accepted_quote or {}).get(
+        "questionnaire_form_types",
+        (journey.quote_state or {}).get("questionnaire_form_types"),
+    )
+    if allowed_questionnaires is not None and form_type not in allowed_questionnaires:
+        raise HTTPException(404, "This form is not included in this booking")
+    if form_type == "final_timings" and not final_timings_released(db, booking):
+        raise HTTPException(
+            409,
+            "Final Timings will become available when the studio sends the timings request email",
+        )
     template = db.scalar(select(QuestionnaireTemplate).where(
         QuestionnaireTemplate.tenant_id == tenant.id,
         QuestionnaireTemplate.form_type == form_type,
