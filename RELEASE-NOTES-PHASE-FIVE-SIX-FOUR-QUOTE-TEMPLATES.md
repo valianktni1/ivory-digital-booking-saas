@@ -12,7 +12,9 @@ Build: `2026.09.22-phase-five-six-four-quote-templates`
 - The quote email screen now lets the photographer choose any active saved email template.
 - The selected email is merged with the couple, wedding, venue and business details before it is shown.
 - The photographer can add enquiry-specific wording without changing the master email template.
-- The final HTML email always includes a branded **View your quote** button linked to that couple's private quote.
+- The final HTML email converts `{{client_portal_link}}` into one large branded **View your quote** button at that exact position in the wording.
+- The long URL remains in the plain-text fallback for accessibility, but is not displayed beside a duplicate button in the HTML email.
+- The button uses an Outlook-safe table-backed design and uploaded logos have explicit email-client sizing.
 - Preparing or sending a quote leaves the record in Enquiries. It moves to Weddings only after quote acceptance or deliberate **Mark as booked**.
 
 ## Safety and data behaviour
@@ -28,5 +30,5 @@ Build: `2026.09.22-phase-five-six-four-quote-templates`
 
 - Python compilation passed.
 - Studio JavaScript syntax checks passed.
-- Full automated suite: `9 passed`.
+- Full automated suite: `10 passed`.
 - Tests cover cross-tenant template isolation, applying a template to an enquiry, compulsory add-ons, chosen email templates, link/button delivery metadata, quote acceptance and the existing enquiry-to-wedding safeguards.

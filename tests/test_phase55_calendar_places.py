@@ -4,7 +4,9 @@ from pathlib import Path
 import httpx
 
 from app import main
-from app.models import Booking, BookingJourney, Tenant, TenantCalendarConnection, TenantStatus
+from app.messaging import render_html
+from app.models import (Booking, BookingJourney, Tenant, TenantCalendarConnection,
+                        TenantEmailBranding, TenantStatus)
 from app.schemas import PublicEnquiryIn
 
 
@@ -81,6 +83,28 @@ def test_venue_details_validation_and_directions_url():
     assert details["place_id"] == "place-alpha"
     assert url.startswith("https://www.google.com/maps/dir/?api=1")
     assert "destination_place_id=place-alpha" in url
+
+
+def test_quote_button_replaces_url_at_template_position_and_outlook_sizes_logo():
+    tenant = Tenant(id="tenant-email", slug="email", display_name="Northlight Wedding Studio",
+                    owner_email="owner@example.com", status=TenantStatus.ACTIVE,
+                    trial_ends_at=main.utcnow() + timedelta(days=30),
+                    branding={"accent_colour": "#a9782e"})
+    branding = TenantEmailBranding(tenant_id=tenant.id, signature_name="Northlight",
+                                   show_logo=True, show_badge=False)
+    url = "https://client.ivorydigital.uk/portal/secure-couple-token"
+    rendered = render_html(
+        tenant, branding,
+        f"Hello Sophie\n\nYour personal quote is ready.\n\n{url}\n\nI look forward to hearing from you.",
+        {"logo": "northlight-logo"}, url, "View your quote",
+    )
+    assert rendered.count("View your quote") == 1
+    assert rendered.count(url) == 1  # the href only; no visible duplicate URL
+    assert rendered.index("Your personal quote is ready") < rendered.index("View your quote")
+    assert rendered.index("View your quote") < rendered.index("I look forward to hearing from you")
+    assert 'role="presentation" align="center"' in rendered
+    assert 'padding:17px 34px' in rendered
+    assert 'width="170"' in rendered
 
 
 def test_phase55_frontends_and_security_policy_are_wired():

@@ -12,8 +12,9 @@ PHASE 5.6.4 — QUOTE TEMPLATE WORKFLOW CHECKLIST
 [ ] Choosing a quote template opens the email-review step.
 [ ] The quote email can be selected from saved email templates.
 [ ] Couple-specific wording can be added without editing the master template.
-[ ] The branded View your quote button is visible in the preview.
-[ ] The sent HTML email contains the secure private quote button.
+[ ] The branded View your quote button appears where {{client_portal_link}} was placed.
+[ ] The HTML email does not show a raw link plus a second duplicate button.
+[ ] The sent Outlook email shows a large button and a correctly sized logo.
 [ ] Sending leaves the record in Enquiries.
 [ ] Acceptance moves the record into Weddings and creates the invoice/agreement.
 [ ] Browser refresh is not required for the prepared state to appear.

@@ -39,11 +39,45 @@ def merge_message(value: str, tenant: Tenant, booking: Booking | None,
     return result
 
 
-def _paragraphs(value: str) -> str:
-    return "".join(
-        f"<p style=\"margin:0 0 16px;line-height:1.65\">{html.escape(part).replace(chr(10), '<br>')}</p>"
-        for part in (value or "").split("\n\n") if part.strip()
+def _paragraph(value: str) -> str:
+    return (
+        f'<p style="margin:0 0 16px;line-height:1.65">'
+        f'{html.escape(value).replace(chr(10), "<br>")}</p>'
     )
+
+
+def _button_table(action_url: str, action_label: str, accent: str) -> str:
+    """A table-backed CTA remains large and legible in desktop Outlook."""
+    safe_url = html.escape(action_url, quote=True)
+    return (
+        '<table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0" '
+        'style="margin:26px auto 30px"><tr>'
+        f'<td align="center" bgcolor="{html.escape(accent, quote=True)}" '
+        f'style="padding:17px 34px;border-radius:10px;background:{html.escape(accent, quote=True)}">'
+        f'<a href="{safe_url}" style="display:block;color:#ffffff;font-family:Arial,sans-serif;'
+        'font-size:17px;line-height:22px;font-weight:800;letter-spacing:.2px;text-decoration:none">'
+        f'{html.escape(action_label)}</a></td></tr></table>'
+    )
+
+
+def _body_html(body: str, action_url: str, action_markup: str) -> tuple[str, bool]:
+    """Put the CTA where the secure URL occurs and hide the long URL in HTML."""
+    rendered: list[str] = []
+    inserted = False
+    for part in (body or "").split("\n\n"):
+        if not part.strip():
+            continue
+        if action_url and not inserted and action_url in part:
+            before, after = part.split(action_url, 1)
+            if before.strip():
+                rendered.append(_paragraph(before.strip()))
+            rendered.append(action_markup)
+            if after.strip():
+                rendered.append(_paragraph(after.strip()))
+            inserted = True
+        else:
+            rendered.append(_paragraph(part))
+    return "".join(rendered), inserted
 
 
 def render_html(tenant: Tenant, branding: TenantEmailBranding | None,
@@ -58,22 +92,26 @@ def render_html(tenant: Tenant, branding: TenantEmailBranding | None,
         details.append(f'<a href="{html.escape(branding.website)}" style="color:{accent}">{html.escape(branding.website)}</a>')
     imagery = ""
     if embedded.get("logo") and branding.show_logo:
-        imagery += f'<img src="cid:{embedded["logo"]}" alt="{html.escape(tenant.display_name)}" style="max-width:170px;max-height:80px;margin:0 16px 10px 0;vertical-align:middle">'
-    if embedded.get("badge") and branding.show_badge:
-        imagery += f'<img src="cid:{embedded["badge"]}" alt="Awards" style="max-width:260px;max-height:105px;margin:0 0 10px;vertical-align:middle">'
-    action = ""
-    if action_url:
-        safe_url = html.escape(action_url, quote=True)
-        action = (
-            f'<p style="margin:24px 0 28px;text-align:center">'
-            f'<a href="{safe_url}" style="display:inline-block;padding:15px 25px;border-radius:10px;'
-            f'color:#ffffff;background:{accent};font-size:16px;font-weight:700;text-decoration:none">'
-            f'{html.escape(action_label)}</a></p>'
+        imagery += (
+            f'<img src="cid:{embedded["logo"]}" width="170" '
+            f'alt="{html.escape(tenant.display_name)}" '
+            'style="display:block;width:170px;max-width:100%;height:auto;border:0;'
+            'margin:0 16px 10px 0;vertical-align:middle">'
         )
+    if embedded.get("badge") and branding.show_badge:
+        imagery += (
+            f'<img src="cid:{embedded["badge"]}" width="260" alt="Awards" '
+            'style="display:block;width:260px;max-width:100%;height:auto;border:0;'
+            'margin:0 0 10px;vertical-align:middle">'
+        )
+    action = _button_table(action_url, action_label, accent) if action_url else ""
+    content, action_inserted = _body_html(body, action_url, action)
+    if action and not action_inserted:
+        content += action
     return f"""<!doctype html><html><body style="margin:0;background:#f4f1eb;color:#243330;font-family:Arial,sans-serif">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f1eb;padding:24px 10px"><tr><td align="center">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:650px;background:#ffffff;border:1px solid #e7e0d5;border-radius:14px;overflow:hidden">
-    <tr><td style="height:6px;background:{accent}"></td></tr><tr><td style="padding:34px 36px 20px">{_paragraphs(body)}{action}</td></tr>
+    <tr><td style="height:6px;background:{accent}"></td></tr><tr><td style="padding:34px 36px 20px">{content}</td></tr>
     <tr><td style="padding:4px 36px 34px;border-top:1px solid #eee7dd"><p style="line-height:1.6;margin:20px 0 10px">{html.escape(branding.signoff or 'Kind regards')}<br><strong>{html.escape(signature_name)}</strong>{('<br>'+ '<br>'.join(x for x in details if x)) if any(details) else ''}</p>{imagery}</td></tr>
     </table><p style="font-size:11px;color:#75817e">Sent securely through Ivory Digital Booking Studio</p></td></tr></table></body></html>"""
 
