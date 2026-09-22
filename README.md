@@ -10,7 +10,17 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release — Phase 5.5
+## Current release — Phase 5.7
+
+Phase 5.7 adds Studio-only date warnings, a deliberately restricted client API,
+itemised live quote totals, saved questionnaire drafts, account recovery,
+Manager health/support controls and clearer next steps.
+
+Read [the Phase 5.7 release notes](RELEASE-NOTES-PHASE-5.7.md) for the completed
+changes, validation and remaining production checks. Use
+[the private-repository deployment instructions](DEPLOY-PHASE-5.7-TRUENAS.txt).
+
+## Earlier platform foundation
 
 Phase 5.5 adds production-ready tenant Calendar setup and exact venue handling to the complete Phase 5.4 photographer workspace. It includes:
 
@@ -113,4 +123,4 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-FIVE-FOUR-COMPLETE-STUDIO-COMMUNICATIONS.md`.
+For the latest release contents and TrueNAS deployment procedure, see `RELEASE-NOTES-PHASE-5.7.md` and `DEPLOY-PHASE-5.7-TRUENAS.txt`.

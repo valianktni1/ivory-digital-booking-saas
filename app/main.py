@@ -1,3 +1,9 @@
+import json
+import logging
+import hashlib
+from email.message import EmailMessage as RecoveryEmail
+from .models import PasswordReset, QuestionnaireDraft
+from .schemas import PasswordResetRequestIn, PasswordResetIn
 import base64
 import email
 import html
@@ -242,7 +248,7 @@ DEFAULT_HELP_ARTICLES = (
         "category": "Calendar", "contexts": ["calendar"],
         "keywords": ["block date", "holiday", "unavailable", "time away", "multiple days", "website checker"],
         "summary": "Block one day or a date range from the Calendar screen.",
-        "body": "Open Calendar, enter the first and last unavailable dates, give the block a clear label, and save it. Use the same date twice for a single day.\n\nThe block is included in public availability immediately and is added to Google Calendar when a connection is available.",
+        "body": "Open Calendar, enter the first and last unavailable dates, give the block a clear label, and save it. Use the same date twice for a single day.\n\nThe block appears in private Studio date warnings and is added to Google Calendar when connected. Couples are never shown clashes.",
         "action_label": "Block dates", "action_route": "calendar", "sort_order": 140,
     },
     {
@@ -636,7 +642,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6.6-professional-invoices",
+    version="0.5.7-private-studio",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -648,7 +654,7 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
@@ -704,7 +710,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.22-phase-five-six-six-professional-invoices", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.22-phase-five-seven-private-studio", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1284,7 +1290,9 @@ def manager_audit(_: User = Depends(platform_admin), db: Session = Depends(get_d
     rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100)).all()
     return [{"id": row.id, "action": row.action, "subject_type": row.subject_type,
              "subject_id": row.subject_id, "tenant_id": row.tenant_id,
-             "detail": row.detail, "created_at": row.created_at.isoformat()} for row in rows]
+             "detail": row.detail, "business_name": (db.get(Tenant, row.tenant_id).display_name if row.tenant_id and db.get(Tenant, row.tenant_id) else "Platform"),
+             "actor_name": (db.get(User, row.actor_user_id).full_name if row.actor_user_id and db.get(User, row.actor_user_id) else "System"),
+             "created_at": row.created_at.isoformat()} for row in rows]
 
 
 def help_article_json(row: HelpArticle, include_body: bool = True) -> dict:
@@ -2147,6 +2155,7 @@ def list_enquiries(context=Depends(studio_context), db: Session = Depends(get_db
              "venue_maps_url": venue_maps_url(row.venue, row.venue_details),
              "package_interest": row.package_interest,
              "message": row.message, "status": display_status,
+             "private_date_conflicts": private_date_conflicts(db, tenant.id, row.event_date, booking.id if booking else None),
              "booking_id": booking.id if booking else None,
              "is_provisional": booking.is_provisional if booking else True,
              "quote_status": quote.get("status"),
@@ -2578,6 +2587,8 @@ def final_timings_released(db: Session, booking: Booking) -> bool:
 
 def journey_json(db: Session, booking: Booking, journey: BookingJourney,
                  include_portal_url: bool = True) -> dict:
+    if not include_portal_url:
+        return public_journey_json(db, booking, journey)
     client = db.scalar(select(Client).where(Client.id == booking.client_id,
                        Client.tenant_id == booking.tenant_id))
     invoices = db.scalars(select(BookingInvoice).where(
@@ -2652,6 +2663,7 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
                                      for item in actions]}
     if include_portal_url:
         result["portal_url"] = portal_url(journey)
+        result["private_date_conflicts"] = private_date_conflicts(db, booking.tenant_id, booking.event_date, booking.id)
     return result
 
 
@@ -3306,7 +3318,7 @@ def send_quote(booking_id: str, request: Request, payload: QuoteEmailSendIn | No
             "email_message_id": message.id}
 
 
-def public_portal(raw_token: str, db: Session) -> tuple[Tenant, Booking, BookingJourney]:
+def public_portal(raw_token: str, db: Session, allow_readonly: bool = False) -> tuple[Tenant, Booking, BookingJourney]:
     # The high-entropy bearer token must be resolved before the tenant is known.
     # Switch immediately to that tenant after the exact hash match.
     set_database_tenant(db, platform_admin=True)
@@ -3315,7 +3327,7 @@ def public_portal(raw_token: str, db: Session) -> tuple[Tenant, Booking, Booking
     if not journey:
         raise HTTPException(404, "This private client area is not available")
     tenant = db.get(Tenant, journey.tenant_id)
-    if not tenant or tenant.status in {TenantStatus.SUSPENDED, TenantStatus.CANCELLED}:
+    if not tenant or tenant.status == TenantStatus.CANCELLED or (tenant.status == TenantStatus.SUSPENDED and not allow_readonly):
         raise HTTPException(404, "This private client area is not available")
     set_database_tenant(db, tenant.id)
     booking = studio_booking(db, tenant.id, journey.booking_id)
@@ -3324,7 +3336,7 @@ def public_portal(raw_token: str, db: Session) -> tuple[Tenant, Booking, Booking
 
 @app.get("/api/public/portal/{raw_token}")
 def get_public_portal(raw_token: str, request: Request, db: Session = Depends(get_db)):
-    tenant, booking, journey = public_portal(raw_token, db)
+    tenant, booking, journey = public_portal(raw_token, db, allow_readonly=True)
     quote_state = dict(journey.quote_state or {})
     expired = False
     if quote_state.get("status") == "sent" and quote_state.get("expires_on"):
@@ -3332,7 +3344,7 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
             expired = date.fromisoformat(quote_state["expires_on"]) < date.today()
         except (TypeError, ValueError):
             expired = False
-    if expired:
+    if expired and tenant.status != TenantStatus.SUSPENDED:
         quote_state["status"] = "expired"
         journey.quote_state = quote_state
         enquiry = enquiry_for_journey(db, journey)
@@ -3340,7 +3352,7 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
             enquiry.status = "quote_expired"
         audit(db, "quote_expired", "booking", booking.id, tenant_id=tenant.id, request=request)
         db.commit()
-    elif quote_state.get("status") == "sent" and not quote_state.get("viewed_at"):
+    elif tenant.status != TenantStatus.SUSPENDED and quote_state.get("status") == "sent" and not quote_state.get("viewed_at"):
         quote_state["viewed_at"] = utcnow().isoformat()
         journey.quote_state = quote_state
         enquiry = enquiry_for_journey(db, journey)
@@ -3349,6 +3361,7 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
         audit(db, "quote_viewed", "booking", booking.id, tenant_id=tenant.id, request=request)
         db.commit()
     data = journey_json(db, booking, journey, include_portal_url=False)
+    data["read_only"] = tenant.status == TenantStatus.SUSPENDED
     data["business"] = {"display_name": (tenant.branding or {}).get("display_name") or tenant.display_name,
                         "accent_colour": (tenant.branding or {}).get("accent_colour") or "#a9782e",
                         "welcome_message": (tenant.branding or {}).get("welcome_message") or "Welcome to your private booking area."}
@@ -3379,6 +3392,17 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
          "submitted": row.form_type in submissions_by_type}
         for row in templates
     ]
+    brand = tenant.branding or {}
+    email_brand = db.get(TenantEmailBranding, tenant.id)
+    data["business"].update({"email": brand.get("invoice_email") or tenant.owner_email,
+                             "phone": brand.get("invoice_phone", ""),
+                             "has_logo": bool(email_brand and email_brand.logo_path and Path(email_brand.logo_path).is_file())})
+    data["payment_instructions"] = {key: brand.get(key, "") for key in
+        ("bank_account_name", "bank_sort_code", "bank_account_number", "invoice_payment_note")}
+    for form in data["available_questionnaires"]:
+        draft = db.scalar(select(QuestionnaireDraft).where(QuestionnaireDraft.tenant_id == tenant.id,
+            QuestionnaireDraft.booking_id == booking.id, QuestionnaireDraft.form_type == form["form_type"]))
+        form["draft"] = {"answers": draft.answers, "updated_at": draft.updated_at.isoformat()} if draft else None
     return data
 
 
@@ -3386,6 +3410,8 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
 def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request,
                         db: Session = Depends(get_db)):
     tenant, booking, journey = public_portal(raw_token, db)
+    # Serialize same-studio acceptances so private collision alerts see concurrent bookings.
+    db.scalar(select(Tenant).where(Tenant.id == tenant.id).with_for_update())
     # Serialise acceptance on PostgreSQL so two near-simultaneous clicks cannot
     # create two invoices for the same quote. SQLite safely ignores the hint.
     journey = db.scalar(select(BookingJourney).where(
@@ -3439,14 +3465,15 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
     journey.booking_fee_pence = min(int(package.get("booking_fee_pence", 0)), total)
     due_days = int(package.get("balance_due_days", 45))
     journey.balance_due_date = booking.event_date - timedelta(days=due_days) if booking.event_date else None
+    fee_due_day = date.today() + timedelta(days=int((tenant.branding or {}).get("booking_fee_due_days", 1)))
     sequence, number = next_invoice(db, tenant.id)
     invoice = BookingInvoice(tenant_id=tenant.id, booking_id=booking.id,
                              sequence=sequence, number=number,
-                             booking_fee_due_date=date.today() + timedelta(days=1),
+                             booking_fee_due_date=fee_due_day,
                              due_date=journey.balance_due_date, total_pence=total,
                              line_items=line_items,
                              payment_schedule=[{"label": "Booking fee", "amount_pence": journey.booking_fee_pence,
-                                                "due_date": (date.today() + timedelta(days=1)).isoformat()},
+                                                "due_date": fee_due_day.isoformat()},
                                                {"label": "Remaining balance", "amount_pence": max(0, total - journey.booking_fee_pence),
                                                 "due_date": journey.balance_due_date.isoformat() if journey.balance_due_date else None}])
     db.add(invoice); db.flush(); booking.status = "quote_accepted"
@@ -3460,7 +3487,7 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
         enquiry.status = "booked"
         cancel_open_enquiry_actions(db, tenant.id, enquiry.id, booking.id)
     trigger_workflow(db, tenant, booking, "quote_accepted")
-    booking_fee_day = date.today() + timedelta(days=1)
+    booking_fee_day = fee_due_day
     trigger_workflow(db, tenant, booking, "booking_fee_due",
                      datetime(booking_fee_day.year, booking_fee_day.month, booking_fee_day.day,
                               9, 0, tzinfo=timezone.utc))
@@ -3494,7 +3521,8 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
          if contract else
          f"Their package has been accepted and invoice {number} was created. Add an active agreement template before asking them to sign."),
     )
-    result = invoice_json(invoice, db)
+    notify_private_date_conflict(db, tenant, booking)
+    result = public_invoice_json(invoice, db)
     db.commit()
     return {"ok": True, "invoice": result, "contract_ready": bool(contract),
             "message": "Your package has been accepted safely."}
@@ -3851,6 +3879,7 @@ def submit_questionnaire(raw_token: str, form_type: str,
                          payload: QuestionnaireSubmitIn, request: Request,
                          db: Session = Depends(get_db)):
     tenant, booking, journey = public_portal(raw_token, db)
+    db.scalar(select(Booking).where(Booking.id == booking.id, Booking.tenant_id == tenant.id).with_for_update())
     if booking.is_provisional:
         raise HTTPException(409, "Booking forms become available after the quote is accepted")
     allowed_questionnaires = (journey.accepted_quote or {}).get(
@@ -3886,6 +3915,9 @@ def submit_questionnaire(raw_token: str, form_type: str,
                                       form_type=form_type, template_snapshot=snapshot,
                                       answers=payload.answers)
         db.add(row)
+    draft = db.scalar(select(QuestionnaireDraft).where(QuestionnaireDraft.tenant_id == tenant.id, QuestionnaireDraft.booking_id == booking.id, QuestionnaireDraft.form_type == form_type))
+    if draft:
+        db.delete(draft)
     trigger_workflow(db, tenant, booking, "questionnaire_submitted")
     if form_type == "booking":
         trigger_workflow(db, tenant, booking, "booking_form_received")
@@ -4309,7 +4341,7 @@ def download_studio_invoice(invoice_id: str, context=Depends(studio_context), db
 
 @app.get("/api/public/portal/{raw_token}/invoices/{invoice_id}/pdf")
 def download_public_invoice(raw_token: str, invoice_id: str, db: Session = Depends(get_db)):
-    tenant, booking, journey = public_portal(raw_token, db)
+    tenant, booking, journey = public_portal(raw_token, db, allow_readonly=True)
     invoice = db.scalar(select(BookingInvoice).where(
         BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id,
         BookingInvoice.booking_id == booking.id))
@@ -4330,7 +4362,7 @@ def download_studio_contract(booking_id: str, context=Depends(studio_context), d
 
 @app.get("/api/public/portal/{raw_token}/contract/pdf")
 def download_public_contract(raw_token: str, db: Session = Depends(get_db)):
-    tenant, booking, journey = public_portal(raw_token, db)
+    tenant, booking, journey = public_portal(raw_token, db, allow_readonly=True)
     contract = db.scalar(select(BookingContract).where(
         BookingContract.tenant_id == tenant.id, BookingContract.booking_id == booking.id))
     if not contract:
@@ -5642,18 +5674,9 @@ def public_enquiry_form(slug: str, db: Session = Depends(get_db)):
 @app.get("/api/public/business/{slug}/availability/{event_date}")
 def public_date_availability(slug: str, event_date: date, db: Session = Depends(get_db)):
     tenant = public_tenant(slug, db)
-    blocked = db.scalar(select(TenantDateBlock.id).where(
-        TenantDateBlock.tenant_id == tenant.id,
-        TenantDateBlock.archived_at.is_(None),
-        TenantDateBlock.start_date <= event_date,
-        TenantDateBlock.end_date >= event_date).limit(1))
-    booked = db.scalar(select(Booking.id).where(
-        Booking.tenant_id == tenant.id, Booking.event_date == event_date,
-        Booking.status.in_(["confirmed", "completed"])).limit(1))
-    return {"date": event_date.isoformat(), "available": not bool(blocked or booked),
-            "message": ("That date currently looks available."
-                        if not blocked and not booked
-                        else "That date is not available. Please get in touch if you would like to discuss alternatives.")}
+    # Public callers must never be able to infer photographer availability.
+    return {"date": event_date.isoformat(), "message": "Please send your enquiry and the studio will be in touch."}
+
 
 
 @app.post("/api/public/business/{slug}/enquiries", status_code=201)
@@ -5691,6 +5714,10 @@ def submit_public_enquiry(slug: str, payload: PublicEnquiryIn, request: Request,
             db.add(EnquiryAnswer(tenant_id=tenant.id, enquiry_id=row.id,
                                  question_id=question.id, question_label=question.label,
                                  answer=answer, sort_order=question.sort_order))
+    if private_date_conflicts(db, tenant.id, row.event_date):
+        create_studio_notification(db, tenant, None, "private_date_conflict",
+                                  "An enquiry needs a private date review",
+                                  "Open Enquiries to review the date. No availability information was shown to the couple.")
     trigger_enquiry_workflow(db, tenant, row)
     create_studio_notification(
         db, tenant, None, "new_enquiry",
@@ -5703,3 +5730,227 @@ def submit_public_enquiry(slug: str, payload: PublicEnquiryIn, request: Request,
     db.commit()
     return {"ok": True, "enquiry_id": row.id, "message": config.success_message,
             "automatic_reply": "paused" if tenant.automations_paused else "not_enabled"}
+
+
+# Phase 5.7: explicit public contracts and private operational tools.
+def public_invoice_json(invoice: BookingInvoice, db: Session) -> dict:
+    source = invoice_json(invoice, db)
+    result = {key: source[key] for key in (
+        "id", "number", "issue_date", "booking_fee_due_date", "due_date",
+        "total_pence", "paid_pence", "outstanding_pence", "status", "line_items", "payment_schedule")}
+    result["payments"] = [{key: payment[key] for key in ("amount_pence", "paid_date", "payment_type")}
+                          for payment in source["payments"]]
+    return result
+
+
+def public_journey_json(db: Session, booking: Booking, journey: BookingJourney) -> dict:
+    invoices = db.scalars(select(BookingInvoice).where(BookingInvoice.tenant_id == booking.tenant_id,
+        BookingInvoice.booking_id == booking.id).order_by(BookingInvoice.created_at.desc())).all()
+    contract = db.scalar(select(BookingContract).where(BookingContract.tenant_id == booking.tenant_id,
+        BookingContract.booking_id == booking.id))
+    quote_keys = ("status", "message", "packages", "add_ons", "custom_items", "expires_on")
+    accepted_keys = ("accepted_at", "accepted_by", "package", "add_ons", "custom_items", "total_pence")
+    return {"id": booking.id, "title": booking.title,
+        "event_date": booking.event_date.isoformat() if booking.event_date else None,
+        "venue": booking.venue, "is_provisional": booking.is_provisional,
+        "quote": {k: v for k, v in (journey.quote_state or {}).items() if k in quote_keys},
+        "accepted_quote": {k: v for k, v in (journey.accepted_quote or {}).items() if k in accepted_keys},
+        "booking_fee_pence": journey.booking_fee_pence,
+        "balance_due_date": journey.balance_due_date.isoformat() if journey.balance_due_date else None,
+        "invoices": [public_invoice_json(row, db) for row in invoices], "contract": contract_json(contract)}
+
+
+def private_date_conflicts(db: Session, tenant_id: str, event_date: date | None,
+                           exclude_booking_id: str | None = None) -> list[dict]:
+    if not event_date:
+        return []
+    rows = db.scalars(select(Booking).where(Booking.tenant_id == tenant_id,
+        Booking.event_date == event_date, Booking.is_provisional.is_(False),
+        Booking.status.notin_(["cancelled", "archived"]),
+        Booking.id != (exclude_booking_id or ""))).all()
+    blocks = db.scalars(select(TenantDateBlock).where(TenantDateBlock.tenant_id == tenant_id,
+        TenantDateBlock.archived_at.is_(None), TenantDateBlock.start_date <= event_date,
+        TenantDateBlock.end_date >= event_date)).all()
+    return [{"kind": "booking", "label": row.title, "id": row.id} for row in rows] + [
+        {"kind": "date_block", "label": row.label, "id": row.id} for row in blocks]
+
+
+def notify_private_date_conflict(db: Session, tenant: Tenant, booking: Booking) -> None:
+    conflicts = private_date_conflicts(db, tenant.id, booking.event_date, booking.id)
+    if conflicts:
+        create_studio_notification(db, tenant, booking, "private_date_conflict",
+            f"Private date review: {booking.title}",
+            "Another booking or date block overlaps. Review in Studio; no clash message was shown to the couple.")
+        audit(db, "private_date_conflict_detected", "booking", booking.id, tenant_id=tenant.id,
+              detail={"count": len(conflicts)})
+
+
+@app.get("/api/public/portal/{raw_token}/logo")
+def portal_logo(raw_token: str, db: Session = Depends(get_db)):
+    tenant, _, _ = public_portal(raw_token, db, allow_readonly=True)
+    row = db.get(TenantEmailBranding, tenant.id)
+    path = Path(row.logo_path) if row and row.logo_path else None
+    if not path or not path.is_file():
+        raise HTTPException(404, "Logo not available")
+    return FileResponse(path)
+
+
+@app.put("/api/public/portal/{raw_token}/questionnaires/{form_type}/draft")
+def save_questionnaire_draft(raw_token: str, form_type: str, payload: QuestionnaireSubmitIn,
+                             request: Request, db: Session = Depends(get_db)):
+    # Reuse the same publication and final-timings gate as the portal.
+    data = get_public_portal(raw_token, request, db)
+    definition = next((f for f in data["available_questionnaires"] if f["form_type"] == form_type), None)
+    if not definition:
+        raise HTTPException(404, "This form is not available")
+    tenant, booking, _ = public_portal(raw_token, db)
+    # Serialize draft saves with submissions on PostgreSQL.
+    db.scalar(select(Booking).where(Booking.id == booking.id, Booking.tenant_id == tenant.id).with_for_update())
+    row = db.scalar(select(QuestionnaireDraft).where(QuestionnaireDraft.tenant_id == tenant.id,
+        QuestionnaireDraft.booking_id == booking.id, QuestionnaireDraft.form_type == form_type))
+    valid_ids = {q["id"] for q in definition["questions"]}
+    if not row:
+        row = QuestionnaireDraft(tenant_id=tenant.id, booking_id=booking.id, form_type=form_type)
+        db.add(row)
+    row.answers = {k: v for k, v in payload.answers.items() if k in valid_ids}
+    row.updated_at = utcnow()
+    db.commit()
+    return {"ok": True, "saved_at": row.updated_at.isoformat()}
+
+
+def issue_password_reset(db: Session, user: User) -> str:
+    for old in db.scalars(select(PasswordReset).where(PasswordReset.user_id == user.id,
+                                                    PasswordReset.used_at.is_(None))):
+        old.used_at = utcnow()
+    raw = opaque_token(36)
+    db.add(PasswordReset(user_id=user.id, token_hash=token_hash(raw), expires_at=utcnow() + timedelta(minutes=30)))
+    return settings.studio_url + "/?reset=" + raw
+
+
+def send_recovery_email(mailbox: MailboxSetting, address: str, url: str) -> None:
+    # Never save recovery links in the Studio email history or application logs.
+    mime = RecoveryEmail()
+    mime["From"] = mailbox.email_address
+    mime["To"] = address
+    mime["Subject"] = "Reset your Ivory Digital Studio password"
+    mime.set_content("Use this private link within 30 minutes to choose a new password:\n\n" + url +
+                     "\n\nIf you did not request this, you can ignore this email.")
+    context = ssl.create_default_context()
+    connection = (smtplib.SMTP_SSL(mailbox.smtp_host, mailbox.smtp_port, timeout=15, context=context)
+                  if mailbox.smtp_security == "ssl" else smtplib.SMTP(mailbox.smtp_host, mailbox.smtp_port, timeout=15))
+    try:
+        connection.ehlo()
+        if mailbox.smtp_security == "starttls":
+            connection.starttls(context=context); connection.ehlo()
+        connection.login(mailbox.smtp_username, decrypt_secret(mailbox.smtp_password_encrypted))
+        connection.send_message(mime)
+    finally:
+        connection.close()
+
+
+@app.post("/api/auth/password-reset/request")
+def request_password_reset(payload: PasswordResetRequestIn, request: Request, db: Session = Depends(get_db)):
+    message = {"message": "If recovery email is available for this account, a link will arrive shortly. Otherwise contact Ivory Digital for a private reset link."}
+    # Bound requests both by account and connection; never return account existence.
+    keys = ["recovery:" + hashlib.sha256(str(payload.email).lower().encode()).hexdigest(),
+            "recovery-ip:" + hashlib.sha256((request.client.host if request.client else "unknown").encode()).hexdigest()]
+    if any(login_locked(db, key) for key in keys):
+        return message
+    for key in keys:
+        record_login_failure(db, key)
+    user = db.scalar(select(User).where(User.email == normalise_email(str(payload.email)), User.is_active.is_(True)))
+    if not user or user.is_platform_admin:
+        return message
+    membership = db.scalar(select(Membership).where(Membership.user_id == user.id))
+    if not membership:
+        return message
+    set_database_tenant(db, membership.tenant_id)
+    mailbox = db.get(MailboxSetting, membership.tenant_id)
+    if mailbox and mailbox.smtp_verified_at and mailbox.smtp_password_encrypted:
+        url = issue_password_reset(db, user)
+        db.commit()
+        try:
+            send_recovery_email(mailbox, user.email, url)
+        except Exception:
+            logging.getLogger(__name__).warning("Studio recovery email delivery failed")
+    return message
+
+
+@app.post("/api/auth/password-reset/complete")
+def complete_password_reset(payload: PasswordResetIn, request: Request, db: Session = Depends(get_db)):
+    if not password_is_strong(payload.password):
+        raise HTTPException(422, "Use 14 or more characters with uppercase, lowercase, a number and a symbol")
+    row = db.scalar(select(PasswordReset).where(PasswordReset.token_hash == token_hash(payload.token)).with_for_update())
+    if not row or row.used_at or aware(row.expires_at) <= utcnow():
+        raise HTTPException(400, "This reset link has expired or has already been used. Please request another.")
+    user = db.get(User, row.user_id)
+    if not user or not user.is_active or user.is_platform_admin:
+        raise HTTPException(400, "This reset link is not available")
+    user.password_hash = hash_password(payload.password)
+    row.used_at = utcnow()
+    for session in db.scalars(select(UserSession).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))):
+        session.revoked_at = utcnow()
+    clear_login_failures(db, user.email)
+    audit(db, "password_reset_completed", "user", user.id, actor=user, request=request)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/manager/tenants/{tenant_id}/password-reset")
+def manager_password_reset(tenant_id: str, request: Request,
+                           admin: User = Depends(platform_admin_write), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    user = db.scalar(select(User).join(Membership, Membership.user_id == User.id).where(
+        Membership.tenant_id == tenant_id, Membership.role == MembershipRole.OWNER))
+    if not tenant or not user or user.is_platform_admin:
+        raise HTTPException(404, "An existing Studio owner account is required")
+    url = issue_password_reset(db, user)
+    audit(db, "owner_password_reset_issued", "tenant", tenant.id, actor=admin, tenant_id=tenant.id, request=request)
+    db.commit()
+    return {"reset_url": url, "email": user.email, "expires_minutes": 30}
+
+
+@app.get("/api/studio/subscription")
+def studio_subscription(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    row = db.get(TenantSubscription, tenant.id)
+    # Subscription primary key may differ from tenant ID.
+    row = row or db.scalar(select(TenantSubscription).where(TenantSubscription.tenant_id == tenant.id))
+    payments = db.scalars(select(PlatformBillingPayment).where(PlatformBillingPayment.tenant_id == tenant.id)
+                         .order_by(PlatformBillingPayment.paid_date.desc()).limit(50)).all()
+    return {"subscription": subscription_json(row, tenant) if row else None,
+            "payments": [{"amount_pence": p.amount_pence, "paid_date": p.paid_date.isoformat(),
+                           "payment_method": p.payment_method} for p in payments]}
+
+
+@app.get("/api/manager/operations")
+def manager_operations(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    rows = []
+    for tenant in db.scalars(select(Tenant).order_by(Tenant.created_at.desc())):
+        mailbox = db.get(MailboxSetting, tenant.id)
+        calendar = db.get(TenantCalendarConnection, tenant.id)
+        last_login = db.scalar(select(func.max(User.last_login_at)).join(Membership, Membership.user_id == User.id)
+                               .where(Membership.tenant_id == tenant.id))
+        failures = db.scalar(select(func.count(WorkflowAction.id)).where(WorkflowAction.tenant_id == tenant.id,
+                                                                         WorkflowAction.status == "error")) or 0
+        document_bytes = db.scalar(select(func.coalesce(func.sum(BookingDocument.size_bytes), 0)).where(
+            BookingDocument.tenant_id == tenant.id)) or 0
+        subscription = db.scalar(select(TenantSubscription).where(TenantSubscription.tenant_id == tenant.id))
+        rows.append({"id": tenant.id, "name": tenant.display_name, "status": tenant.status.value,
+            "billing_status": subscription.billing_status if subscription else "unknown",
+            "trial_ends_at": tenant.trial_ends_at.isoformat(), "onboarding": tenant.onboarding or {},
+            "last_login": last_login.isoformat() if last_login else None,
+            "email_ready": bool(mailbox and mailbox.smtp_verified_at),
+            "calendar_connected": bool(calendar and calendar.refresh_token_encrypted),
+            "calendar_error": bool(calendar and calendar.last_error), "failed_emails": failures,
+            "document_bytes": document_bytes})
+    role = None
+    if db.bind.dialect.name == "postgresql":
+        role = db.execute(text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user")).mappings().one()
+    backup = None
+    try:
+        stored = json.loads((settings.platform_storage_root / "last-deployment-backup.json").read_text())
+        backup = {key: stored.get(key) for key in ("created_at", "size_bytes", "archive_checked")}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"businesses": rows, "deployment_backup": backup, "database_restricted_role": not (role["rolsuper"] or role["rolbypassrls"]) if role else None}

@@ -602,7 +602,8 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         portal = manager.get(f"/api/public/portal/{portal_token}")
         assert portal.status_code == 200, portal.text
         assert portal.json()["quote"]["status"] == "sent"
-        assert portal.json()["quote"]["viewed_at"]
+        assert "viewed_at" not in portal.json()["quote"]
+        assert alpha_client.get(f"/api/studio/bookings/{booking_id}/journey").json()["quote"]["viewed_at"]
         assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_viewed"
         assert portal.json()["quote"]["packages"][0]["information_url"] == "https://alpha.example/story-collection"
         assert portal.json()["quote"]["add_ons"][0]["information_url"] == "https://alpha.example/wedding-albums"
@@ -791,10 +792,10 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert blocked.json()["calendar"]["status"] == "pending"
         assert manager.get(
             "/api/public/business/alpha-weddings/availability/2027-01-03"
-        ).json()["available"] is False
+        ).json().get("available") is None
         assert manager.get(
             "/api/public/business/alpha-weddings/availability/2027-01-10"
-        ).json()["available"] is True
+        ).json().get("available") is None
         assert beta_client.delete(
             f"/api/studio/date-blocks/{blocked.json()['id']}", headers=csrf(beta_client),
         ).status_code == 404

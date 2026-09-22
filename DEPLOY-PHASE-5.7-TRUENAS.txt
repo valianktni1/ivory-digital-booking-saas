@@ -1,0 +1,49 @@
+IVORY DIGITAL — PHASE 5.7
+Private Studio warnings and clearer client experience
+
+1. Extract the supplied full repository ZIP on your computer.
+2. Copy the CONTENTS of ivory-digital-booking-saas-main into your existing
+   GitHub Desktop repository folder. Keep the existing .git folder and your
+   own .env/compose settings. The ZIP contains no credentials or client data.
+3. In GitHub Desktop, review the changed files, commit and push to your
+   existing PRIVATE repository. Do not make the repository public.
+4. After the push has completed, run on TrueNAS:
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+sudo git pull --ff-only
+sudo bash DEPLOY-PHASE-5.7.sh
+
+Run the last command only if the pull succeeded. A private GitHub token already
+configured for your existing sudo git pull is reused. No new key is required.
+
+The script:
+- Checks all three interfaces and the backend have the new release marker.
+- Saves and checks a PostgreSQL custom-format database backup.
+- Tags the actual running application images and writes a rollback command.
+- Builds backend, worker, Studio, Client AND Manager.
+- Restarts the backend first for the additive draft/recovery tables.
+- Waits for health checks, then starts the other application services.
+- Verifies the release through all three application ports.
+- Shows the database backup in Manager after successful deployment.
+
+The script keeps the existing database and Redis services, volumes, passwords,
+email connections, Google credentials, private GitHub access and .env file.
+The database dump does not replace your existing backups of uploaded files.
+
+IF SOMETHING FAILS
+Stop at the reported error. The script prints the exact backup folder.
+Use its ROLLBACK.sh to restore the previous application images without reverting
+new client records. Do not restore the database merely to undo this additive
+release. Keep the rollback image tags until you are satisfied with the update.
+
+QUICK PROOF CHECK (use a fictional test couple)
+- Manager: Needs your attention, Studio health and Owner password reset.
+- Studio: Enquiries and weddings show private warnings for a blocked date.
+- Couple: the same enquiry/quote displays no availability or clash warning.
+- Choose a package: total includes compulsory extras, discounts and pence.
+- Accept: contract/invoice journey works and the booking fee uses your setting.
+- Questionnaire: save a draft, close/reopen the private link, then submit it.
+- Final timings stay hidden until the invitation email has actually been sent.
+- Studio: My subscription and Communications > Scheduled emails.
+- If a business is suspended, its couples can still download existing invoices
+  and signed agreements, but cannot submit changes until reactivation.

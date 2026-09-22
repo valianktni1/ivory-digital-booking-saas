@@ -7,3 +7,6 @@ __pycache__/
 *.db-journal
 test-storage/
 tests/.runtime/
+
+*.dump
+.release-backups/

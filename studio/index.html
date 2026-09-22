@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#17211f">
   <title>Ivory Digital Studio</title>
-  <link rel="stylesheet" href="/styles.css?v=phase-five-six-six-professional-invoices">
-  <link rel="stylesheet" href="/v55.css?v=phase-five-six-six-professional-invoices">
+  <link rel="stylesheet" href="/styles.css?v=phase-five-seven-private-studio">
+  <link rel="stylesheet" href="/v55.css?v=phase-five-seven-private-studio">
 </head>
 <body>
   <section id="auth-view" class="auth-shell">
@@ -21,7 +21,7 @@
         <p id="auth-error" class="error" role="alert"></p>
         <button class="button primary wide" type="submit">Open my studio</button>
       </form>
-      <p class="secure-note">Securely hosted by Ivory Digital. Your business data is kept separate and private.</p>
+      <button id="forgot-password" class="text-button" type="button">Forgot your password?</button><p class="secure-note">Securely hosted by Ivory Digital. Your business data is kept separate and private.</p>
     </article>
     <footer>Thoughtfully built for wedding photographers and videographers.</footer>
   </section>
@@ -43,11 +43,11 @@
         <button data-section="packages"><i>£</i>Packages & pricing</button>
         <button data-section="quote-templates"><i>▤</i>Quote templates</button>
         <button id="email-templates-nav" data-section="communications"><i>✎</i>Email templates</button>
-        <button data-section="workflow"><i>✉</i>Emails & workflow</button>
+        <button data-section="workflow"><i>✉</i>Automation settings</button>
         <button data-section="documents"><i>✓</i>Contracts & forms</button>
         <button data-section="mailbox"><i>@</i>Email connection</button>
         <span>SUPPORT</span>
-        <button id="sidebar-help" type="button"><i>?</i>Help & guided tours</button>
+        <button id="my-subscription" type="button"><i>£</i>My subscription</button><button id="sidebar-help" type="button"><i>?</i>Help & guided tours</button>
       </nav>
       <div class="profile"><span id="initials">--</span><div><strong id="profile-name">Studio owner</strong><small id="profile-role">Owner</small></div><button id="logout" title="Sign out">↗</button></div>
     </aside>
@@ -82,7 +82,7 @@
               <label>Business name<input id="business-name" required minlength="2" maxlength="160"></label>
               <label>Brand colour<span class="colour-field"><input id="accent" type="color" value="#a9782e"><input id="accent-text" value="#a9782e" pattern="#[0-9A-Fa-f]{6}" maxlength="7"></span></label>
               <label>Welcome message<textarea id="welcome-message" rows="4" maxlength="500"></textarea></label>
-              <fieldset class="invoice-business-settings"><legend>Invoice and payment details</legend><p>These appear on professional invoices and are never shown publicly.</p><label>Business address<textarea id="invoice-business-address" rows="4" maxlength="1000" placeholder="Studio address&#10;Town or city&#10;Postcode"></textarea></label><div class="form-grid"><label>Invoice email<input id="invoice-email" type="email" maxlength="254"></label><label>Telephone<input id="invoice-phone" maxlength="60"></label><label>Website<input id="invoice-website" type="url" maxlength="500" placeholder="https://..."></label><label>Bank account name<input id="bank-account-name" maxlength="160"></label><label>Sort code<input id="bank-sort-code" maxlength="30"></label><label>Account number<input id="bank-account-number" maxlength="50"></label></div><label>Tax note<input id="invoice-tax-note" maxlength="500" placeholder="No VAT has been charged on this invoice."></label><label>Additional payment note<textarea id="invoice-payment-note" rows="3" maxlength="1000" placeholder="Optional payment instructions"></textarea></label></fieldset>
+              <fieldset class="invoice-business-settings"><legend>Invoice and payment details</legend><p>These appear on your invoices and in the couple’s private payment section.</p><label>Business address<textarea id="invoice-business-address" rows="4" maxlength="1000" placeholder="Studio address&#10;Town or city&#10;Postcode"></textarea></label><div class="form-grid"><label>Invoice email<input id="invoice-email" type="email" maxlength="254"></label><label>Telephone<input id="invoice-phone" maxlength="60"></label><label>Website<input id="invoice-website" type="url" maxlength="500" placeholder="https://..."></label><label>Bank account name<input id="bank-account-name" maxlength="160"></label><label>Sort code<input id="bank-sort-code" maxlength="30"></label><label>Account number<input id="bank-account-number" maxlength="50"></label></div><label>Booking fee due after acceptance (days)<input id="booking-fee-due-days" type="number" min="0" max="90" value="1"><small>Applies to newly accepted quotes. Existing invoices keep their deadlines.</small></label><label>Tax note<input id="invoice-tax-note" maxlength="500" placeholder="No VAT has been charged on this invoice."></label><label>Additional payment note<textarea id="invoice-payment-note" rows="3" maxlength="1000" placeholder="Optional payment instructions"></textarea></label></fieldset>
               <p id="brand-error" class="error" role="alert"></p>
               <button class="button primary" type="submit">Save business details</button>
             </form>
@@ -130,7 +130,7 @@
 
         <div id="communications-section" class="hidden">
           <header class="section-head action-head"><div><button class="text-button back-home">← Back to home</button><span class="eyebrow">COMMUNICATIONS</span><h1>Every conversation, clearly organised</h1><p>Review prepared messages, send personal emails and see replies without hunting through the system.</p></div><button id="refresh-inbox" class="button primary">Refresh inbox</button></header>
-          <div class="communications-tabs"><button class="active" data-comms-tab="inbox">Inbox</button><button data-comms-tab="review">Review queue</button><button data-comms-tab="templates">Templates</button><button data-comms-tab="signature">Signature</button></div>
+          <div class="communications-tabs"><button class="active" data-comms-tab="inbox">Inbox</button><button data-comms-tab="review">Review queue</button><button data-comms-tab="scheduled">Scheduled emails</button><button data-comms-tab="templates">Templates</button><button data-comms-tab="signature">Signature</button></div>
           <section id="communications-content"></section>
         </div>
 
@@ -189,8 +189,8 @@
   <dialog id="question-dialog" class="editor"><form id="question-form"><input id="question-id" type="hidden"><header><div><span class="eyebrow">ENQUIRY QUESTION</span><h2 id="question-dialog-title">Add a question</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label class="wide-field">Question<input id="question-label" required maxlength="180"></label><label>Answer type<select id="question-type"><option value="short_text">Short answer</option><option value="long_text">Long answer</option><option value="email">Email address</option><option value="phone">Telephone number</option><option value="date">Date</option><option value="single_choice">Choose one</option><option value="multiple_choice">Choose several</option><option value="yes_no">Yes or no</option><option value="venue">Venue search</option></select></label><label>Help text<input id="question-help" maxlength="300" placeholder="Optional guidance for the couple"></label><label id="question-options-wrap" class="wide-field hidden">Choices <small>One option per line</small><textarea id="question-options" rows="5"></textarea></label><label class="check"><input id="question-required" type="checkbox"> Answer required</label><label class="check"><input id="question-active" type="checkbox" checked> Show on form</label></div><p id="question-error" class="error"></p><footer><button id="delete-question" type="button" class="button danger hidden">Delete question</button><span class="dialog-spacer"></span><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Save question</button></footer></form></dialog>
   <dialog id="payment-dialog" class="editor"><form id="payment-form"><input id="payment-invoice-id" type="hidden"><header><div><span class="eyebrow">CONFIRM MONEY RECEIVED</span><h2>Record a payment</h2></div><button type="button" class="close-dialog" aria-label="Close">×</button></header><div class="form-grid"><label>Amount received (£)<input id="payment-amount" type="number" min="0.01" step="0.01" required></label><label>Date received<input id="payment-date" type="date" required></label><label>How it was paid<select id="payment-type"><option value="bank_transfer">Bank transfer</option><option value="cash">Cash</option><option value="card">Card</option><option value="other">Other</option></select></label><label>Reference<input id="payment-reference" maxlength="160"></label><label class="wide-field">Private note<textarea id="payment-notes" rows="3"></textarea></label></div><p id="payment-error" class="error"></p><footer><button type="button" class="button quiet close-dialog">Cancel</button><button class="button primary" type="submit">Confirm received payment</button></footer></form></dialog>
   <dialog id="work-dialog" class="editor work-dialog"></dialog>
-  <script src="/app.js?v=phase-five-six-six-professional-invoices" defer></script>
-  <script src="/v54.js?v=phase-five-six-six-professional-invoices" defer></script>
-  <script src="/v55.js?v=phase-five-six-six-professional-invoices" defer></script>
+  <script src="/app.js?v=phase-five-seven-private-studio" defer></script>
+  <script src="/v54.js?v=phase-five-seven-private-studio" defer></script>
+  <script src="/v55.js?v=phase-five-seven-private-studio" defer></script>
 </body>
 </html>

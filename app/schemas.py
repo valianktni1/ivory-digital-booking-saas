@@ -10,6 +10,15 @@ class LoginIn(BaseModel):
     code: str | None = Field(default=None, min_length=6, max_length=32)
 
 
+class PasswordResetRequestIn(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetIn(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    password: str = Field(min_length=14, max_length=500)
+
+
 class TotpConfirmIn(BaseModel):
     code: str = Field(min_length=6, max_length=12)
 
@@ -91,6 +100,7 @@ class BookingCreateIn(BaseModel):
 
 
 class BrandingPatchIn(BaseModel):
+    booking_fee_due_days: int = Field(default=1, ge=0, le=90)
     display_name: str = Field(min_length=2, max_length=160)
     accent_colour: str = Field(default="#a9782e", pattern=r"^#[0-9A-Fa-f]{6}$")
     welcome_message: str = Field(default="Welcome to your private booking area.", max_length=500)

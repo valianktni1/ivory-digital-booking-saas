@@ -50,7 +50,7 @@ def install_postgres_rls(db: Session) -> None:
                        "booking_journeys", "tenant_invoice_counters",
                        "booking_invoices", "booking_quote_revisions", "booking_payments",
                        "tenant_contract_templates", "booking_contracts",
-                       "questionnaire_templates", "questionnaire_submissions",
+                       "questionnaire_templates", "questionnaire_submissions", "questionnaire_drafts",
                        "tenant_calendar_connections", "tenant_calendar_oauth_states",
                        "tenant_date_blocks",
                        "workflow_step_controls", "workflow_actions",

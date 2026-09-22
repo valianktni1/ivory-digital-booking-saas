@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
@@ -27,7 +28,7 @@ def inside_delivery_window(tenant: Tenant) -> bool:
 
 
 def send_action(db, action: WorkflowAction, tenant: Tenant) -> None:
-    if tenant.automations_paused or action.status != "queued" or aware(action.due_at) > datetime.now(timezone.utc):
+    if tenant.status not in {TenantStatus.ACTIVE, TenantStatus.TRIAL} or tenant.automations_paused or action.status != "queued" or aware(action.due_at) > datetime.now(timezone.utc):
         return
     payload = dict(action.payload or {})
     if payload.get("action_type") != "email":
@@ -60,12 +61,15 @@ def process_owner_notifications() -> None:
     with SessionLocal() as scan:
         set_database_tenant(scan, platform_admin=True)
         candidates = list(scan.execute(select(StudioNotification.id, StudioNotification.tenant_id).where(
-            StudioNotification.email_status.in_(["queued", "waiting_for_mailbox"])
+            StudioNotification.email_status.in_(["queued", "waiting_for_mailbox"]),
+            StudioNotification.tenant_id.in_(select(MailboxSetting.tenant_id).where(
+                MailboxSetting.smtp_verified_at.is_not(None)))
         ).order_by(StudioNotification.created_at).limit(25)).all())
     for notification_id, tenant_id in candidates:
         with SessionLocal() as db:
             set_database_tenant(db, tenant_id)
-            row = db.get(StudioNotification, notification_id)
+            row = db.scalar(select(StudioNotification).where(StudioNotification.id == notification_id,
+                StudioNotification.email_status.in_(["queued", "waiting_for_mailbox"])).with_for_update(skip_locked=True))
             tenant = db.get(Tenant, tenant_id)
             branding = db.get(TenantEmailBranding, tenant_id)
             mailbox = db.get(MailboxSetting, tenant_id)
@@ -84,6 +88,7 @@ def process_owner_notifications() -> None:
                                   booking=db.get(Booking, row.booking_id) if row.booking_id else None)
                 row.email_status = "sent"
             except Exception:
+                logging.getLogger(__name__).exception("Owner notification delivery failed")
                 row.email_status = "failed"
             db.commit()
 
@@ -91,16 +96,25 @@ def process_owner_notifications() -> None:
 def process_workflow_actions() -> None:
     with SessionLocal() as scan:
         set_database_tenant(scan, platform_admin=True)
-        candidates = list(scan.execute(select(WorkflowAction.id, WorkflowAction.tenant_id).where(
-            WorkflowAction.status == "queued",
-            WorkflowAction.due_at <= datetime.now(timezone.utc)
-        ).order_by(WorkflowAction.due_at).limit(25)).all())
+        # Fair per-studio batches: sleeping or paused studios cannot monopolise the queue.
+        candidates = []
+        tenants = scan.scalars(select(Tenant).where(Tenant.automations_paused.is_(False),
+            Tenant.status.in_([TenantStatus.ACTIVE, TenantStatus.TRIAL]))).all()
+        for tenant in tenants:
+            if not inside_delivery_window(tenant):
+                continue
+            candidates.extend(scan.execute(select(WorkflowAction.id, WorkflowAction.tenant_id).where(
+                WorkflowAction.tenant_id == tenant.id, WorkflowAction.status == "queued",
+                WorkflowAction.payload["action_type"].as_string() == "email",
+                WorkflowAction.due_at <= datetime.now(timezone.utc)
+            ).order_by(WorkflowAction.due_at).limit(25)).all())
     for action_id, tenant_id in candidates:
         with SessionLocal() as db:
             set_database_tenant(db, tenant_id)
             action = db.scalar(select(WorkflowAction).where(
                 WorkflowAction.id == action_id,
-                WorkflowAction.tenant_id == tenant_id))
+                WorkflowAction.tenant_id == tenant_id,
+                WorkflowAction.status == "queued").with_for_update(skip_locked=True))
             tenant = db.get(Tenant, tenant_id)
             if not action:
                 continue
@@ -189,7 +203,6 @@ def run() -> None:
     while True:
         now = datetime.now(timezone.utc)
         try:
-            redis.set("ivory-booking:worker-heartbeat", now.isoformat(), ex=180)
             with SessionLocal() as db:
                 set_database_tenant(db, platform_admin=True)
                 db.execute(delete(UserSession).where(UserSession.expires_at < now))
@@ -197,10 +210,9 @@ def run() -> None:
             process_billing_statuses(now)
             process_workflow_actions()
             process_owner_notifications()
+            redis.set("ivory-booking:worker-heartbeat", datetime.now(timezone.utc).isoformat(), ex=180)
         except Exception:
-            # Docker restarts unhealthy dependencies; the worker retries without
-            # changing or discarding tenant work.
-            pass
+            logging.getLogger(__name__).exception("Worker cycle failed; pending work is retained")
         time.sleep(60)
 
 
