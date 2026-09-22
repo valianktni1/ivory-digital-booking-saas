@@ -1,0 +1,35 @@
+IVORY DIGITAL BOOKING STUDIO - PHASE 5.6.6
+Build: 2026.09.22-phase-five-six-six-professional-invoices
+
+Run this only after committing and pushing the Phase 5.6.6 files through GitHub Desktop.
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+
+PHASE566_BACKUP="ivory-booking-before-phase566-$(date +%Y%m%d-%H%M%S).dump"
+
+sudo docker exec tenantsbookingsystem2026-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$PHASE566_BACKUP"
+
+sudo ls -lh "$PHASE566_BACKUP"
+
+sudo git pull --ff-only
+
+grep -n "phase-five-six-six-professional-invoices" app/main.py
+
+sudo docker compose -f compose.yaml build --no-cache backend worker studio client
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate backend
+
+sleep 25
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate studio client worker
+
+sleep 30
+
+sudo docker compose -f compose.yaml ps
+
+curl -fsS http://127.0.0.1:30060/ | grep -o "phase-five-six-six-professional-invoices" | head -1
+
+curl -fsS http://127.0.0.1:30062/ | grep -o "phase-five-six-six-professional-invoices" | head -1
+
+curl -fsS http://127.0.0.1:30060/api/health && echo
+

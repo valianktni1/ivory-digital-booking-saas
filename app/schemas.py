@@ -94,11 +94,31 @@ class BrandingPatchIn(BaseModel):
     display_name: str = Field(min_length=2, max_length=160)
     accent_colour: str = Field(default="#a9782e", pattern=r"^#[0-9A-Fa-f]{6}$")
     welcome_message: str = Field(default="Welcome to your private booking area.", max_length=500)
+    invoice_business_address: str = Field(default="", max_length=1000)
+    invoice_email: str = Field(default="", max_length=254)
+    invoice_phone: str = Field(default="", max_length=60)
+    invoice_website: str = Field(default="", max_length=500)
+    bank_account_name: str = Field(default="", max_length=160)
+    bank_sort_code: str = Field(default="", max_length=30)
+    bank_account_number: str = Field(default="", max_length=50)
+    invoice_tax_note: str = Field(default="No VAT has been charged on this invoice.", max_length=500)
+    invoice_payment_note: str = Field(default="", max_length=1000)
 
-    @field_validator("welcome_message")
+    @field_validator(
+        "welcome_message", "invoice_business_address", "invoice_email", "invoice_phone",
+        "invoice_website", "bank_account_name", "bank_sort_code", "bank_account_number",
+        "invoice_tax_note", "invoice_payment_note",
+    )
     @classmethod
     def strip_welcome(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("invoice_website")
+    @classmethod
+    def clean_invoice_website(cls, value: str) -> str:
+        if value and not value.lower().startswith("https://"):
+            raise ValueError("The invoice website must begin with https://")
+        return value
 
 
 class PackageIn(BaseModel):

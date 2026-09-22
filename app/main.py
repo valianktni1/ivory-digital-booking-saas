@@ -22,12 +22,17 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Respon
 import qrcode
 import qrcode.image.svg
 import httpx
+import reportlab
 from fastapi.responses import FileResponse, RedirectResponse
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Image as ReportLabImage
+from reportlab.platypus import KeepTogether, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -631,7 +636,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6.5-final-timings-gate",
+    version="0.5.6.6-professional-invoices",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -699,7 +704,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.22-phase-five-six-five-final-timings-gate", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.22-phase-five-six-six-professional-invoices", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -3913,32 +3918,346 @@ def pdf_response(story: list, filename: str) -> Response:
     })
 
 
+def invoice_money(value: int) -> str:
+    amount = abs(int(value)) / 100
+    return f"-£{amount:,.2f}" if value < 0 else f"£{amount:,.2f}"
+
+
+def invoice_description_parts(value: str) -> list[tuple[str, bool]]:
+    """Turn package wording into readable invoice paragraphs and bullets."""
+    clean = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not clean:
+        return []
+    if "\n" not in clean and "*" in clean:
+        chunks = re.split(r"\s*\*+\s*", clean)
+    else:
+        chunks = clean.split("\n")
+    result: list[tuple[str, bool]] = []
+    for chunk in chunks:
+        text_value = chunk.strip()
+        if not text_value:
+            continue
+        bullet = text_value.startswith(("•", "*", "-", "–", "—"))
+        text_value = text_value.lstrip("•*-–— ").strip()
+        if text_value:
+            result.append((text_value, bullet or len(result) > 0))
+    return result
+
+
 def invoice_pdf(tenant: Tenant, booking: Booking, invoice: BookingInvoice, db: Session) -> Response:
-    styles = getSampleStyleSheet(); normal = styles["BodyText"]
-    story = [Paragraph(html.escape(tenant.display_name), styles["Title"]),
-             Paragraph(f"Invoice {html.escape(invoice.number)}", styles["Heading1"]),
-             Spacer(1, 5 * mm),
-             Paragraph(f"For: {html.escape(booking.title)}", normal),
-             Paragraph(f"Wedding date: {booking.event_date.strftime('%A %d %B %Y') if booking.event_date else 'To be confirmed'}", normal),
-             Paragraph(f"Venue: {html.escape(booking.venue or 'To be confirmed')}", normal),
-             Spacer(1, 5 * mm)]
-    rows = [["Description", "Amount"]] + [[html.escape(str(item.get("label", "Item"))),
-                                              f"£{int(item.get('price_pence', 0))/100:,.2f}"]
-                                             for item in invoice.line_items or []]
-    rows += [["Invoice total", f"£{invoice.total_pence/100:,.2f}"],
-             ["Paid", f"£{invoice.paid_pence/100:,.2f}"],
-             ["Outstanding", f"£{max(0, invoice.total_pence-invoice.paid_pence)/100:,.2f}"]]
-    table = Table(rows, colWidths=[130 * mm, 35 * mm])
-    table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1d2926")),
-                               ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                               ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                               ("ALIGN", (-1, 0), (-1, -1), "RIGHT"),
-                               ("GRID", (0, 0), (-1, -1), .4, colors.HexColor("#deded8")),
-                               ("PADDING", (0, 0), (-1, -1), 8)]))
-    story += [table, Spacer(1, 6 * mm),
-              Paragraph(f"Status: {html.escape(invoice.status.replace('_', ' ').title())}", styles["Heading3"]),
-              Paragraph("This invoice and its payment history are held securely in the photographer's Ivory Digital Booking Studio.", normal)]
-    return pdf_response(story, f"{booking.title}-{booking.event_date or 'date-tbc'}-{invoice.number}")
+    branding = dict(tenant.branding or {})
+    email_branding = db.get(TenantEmailBranding, tenant.id)
+    client = db.scalar(select(Client).where(
+        Client.id == booking.client_id, Client.tenant_id == tenant.id))
+    journey = db.scalar(select(BookingJourney).where(
+        BookingJourney.booking_id == booking.id,
+        BookingJourney.tenant_id == tenant.id))
+    booking_form = db.scalar(select(QuestionnaireSubmission).where(
+        QuestionnaireSubmission.tenant_id == tenant.id,
+        QuestionnaireSubmission.booking_id == booking.id,
+        QuestionnaireSubmission.form_type == "booking"))
+    accepted = dict(journey.accepted_quote or {}) if journey else {}
+    accepted_package = dict(accepted.get("package") or {})
+    accepted_add_ons = {str(item.get("name")): item for item in accepted.get("add_ons", [])}
+
+    accent_value = branding.get("accent_colour") or "#a9782e"
+    try:
+        accent = colors.HexColor(accent_value)
+    except ValueError:
+        accent = colors.HexColor("#a9782e")
+    ink = colors.HexColor("#1d2926")
+    muted = colors.HexColor("#68746f")
+    line = colors.HexColor("#d9ddd8")
+    paper = colors.HexColor("#f7f4ed")
+    pale = colors.HexColor("#f4f7f5")
+
+    sans_font = "Helvetica"
+    bold_font = "Helvetica-Bold"
+    try:
+        reportlab_fonts = Path(reportlab.__file__).resolve().parent / "fonts"
+        if "IvorySans" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("IvorySans", str(reportlab_fonts / "Vera.ttf")))
+            pdfmetrics.registerFont(TTFont("IvorySansBold", str(reportlab_fonts / "VeraBd.ttf")))
+            pdfmetrics.registerFontFamily("IvorySans", normal="IvorySans", bold="IvorySansBold")
+        sans_font = "IvorySans"
+        bold_font = "IvorySansBold"
+    except Exception:
+        pass
+
+    styles = getSampleStyleSheet()
+    business_style = ParagraphStyle(
+        "InvoiceBusiness", parent=styles["Title"], fontName=sans_font,
+        fontSize=24, leading=28, textColor=ink, spaceAfter=3 * mm,
+    )
+    invoice_title_style = ParagraphStyle(
+        "InvoiceTitle", parent=styles["Title"], fontName=bold_font,
+        fontSize=24, leading=27, textColor=ink, alignment=TA_RIGHT, letterSpacing=2.5,
+    )
+    eyebrow_style = ParagraphStyle(
+        "InvoiceEyebrow", parent=styles["BodyText"], fontName=bold_font,
+        fontSize=7.5, leading=9, textColor=muted, letterSpacing=1.4, spaceAfter=3 * mm,
+    )
+    body_style = ParagraphStyle(
+        "InvoiceBody", parent=styles["BodyText"], fontName=sans_font,
+        fontSize=9.5, leading=14, textColor=ink,
+    )
+    small_style = ParagraphStyle(
+        "InvoiceSmall", parent=body_style, fontSize=8.2, leading=12, textColor=muted,
+    )
+    label_style = ParagraphStyle(
+        "InvoiceLabel", parent=small_style, fontName=bold_font, textColor=ink,
+    )
+    item_title_style = ParagraphStyle(
+        "InvoiceItemTitle", parent=body_style, fontName=bold_font,
+        fontSize=10.5, leading=13, spaceAfter=2.2 * mm,
+    )
+    item_detail_style = ParagraphStyle(
+        "InvoiceItemDetail", parent=small_style, fontSize=8.5, leading=12.5,
+        leftIndent=0, firstLineIndent=0, spaceAfter=2.2 * mm,
+    )
+    amount_style = ParagraphStyle(
+        "InvoiceAmount", parent=body_style, fontName=bold_font, alignment=TA_RIGHT,
+    )
+    total_label_style = ParagraphStyle(
+        "InvoiceTotalLabel", parent=body_style, fontName=bold_font,
+    )
+    total_amount_style = ParagraphStyle(
+        "InvoiceTotalAmount", parent=total_label_style, alignment=TA_RIGHT,
+    )
+
+    def paragraph_lines(values: list[str], style: ParagraphStyle = body_style) -> Paragraph:
+        safe = [html.escape(str(value).strip()).replace("\n", "<br/>")
+                for value in values if str(value).strip()]
+        return Paragraph("<br/>".join(safe) or "&nbsp;", style)
+
+    logo = None
+    if email_branding and email_branding.show_logo and email_branding.logo_path:
+        logo_path = Path(email_branding.logo_path)
+        if logo_path.is_file():
+            try:
+                logo = ReportLabImage(str(logo_path))
+                logo._restrictSize(55 * mm, 27 * mm)
+            except Exception:
+                logo = None
+    business_name = branding.get("display_name") or tenant.display_name
+    brand_mark = logo or Paragraph(html.escape(business_name), business_style)
+    header = Table([[brand_mark, Paragraph("INVOICE", invoice_title_style)]],
+                   colWidths=[105 * mm, 69 * mm])
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    business_lines = [branding.get("invoice_business_address", "")]
+    business_lines += [
+        branding.get("invoice_phone") or (email_branding.telephone if email_branding else ""),
+        branding.get("invoice_email") or tenant.owner_email,
+        branding.get("invoice_website") or (email_branding.website if email_branding else ""),
+    ]
+    seller = paragraph_lines(business_lines, small_style)
+    wedding_date = booking.event_date.strftime("%d %B %Y") if booking.event_date else "To be confirmed"
+    details_rows = [
+        [Paragraph("Number", label_style), Paragraph(html.escape(invoice.number), small_style)],
+        [Paragraph("Issue date", label_style), Paragraph(invoice.issue_date.strftime("%d %B %Y"), small_style)],
+        [Paragraph("Booking fee due", label_style), Paragraph(invoice.booking_fee_due_date.strftime("%d %B %Y") if invoice.booking_fee_due_date else "To be confirmed", small_style)],
+        [Paragraph("Final balance due", label_style), Paragraph(invoice.due_date.strftime("%d %B %Y") if invoice.due_date else "To be confirmed", small_style)],
+        [Paragraph("Wedding date", label_style), Paragraph(wedding_date, small_style)],
+    ]
+    details = Table(details_rows, colWidths=[31 * mm, 44 * mm])
+    details.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+    ]))
+
+    booking_answers = dict(booking_form.answers or {}) if booking_form else {}
+    bill_to_lines = [booking.title]
+    if client:
+        bill_to_lines += [client.email, client.phone]
+    bill_to_lines += [
+        booking_answers.get("street_address", ""),
+        booking_answers.get("town", ""),
+        booking_answers.get("county", ""),
+        booking_answers.get("postcode", ""),
+    ]
+    parties = Table([
+        [Paragraph("BILL TO", eyebrow_style), Paragraph("INVOICE DETAILS", eyebrow_style)],
+        [paragraph_lines(bill_to_lines), details],
+    ], colWidths=[99 * mm, 75 * mm])
+    parties.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    item_rows: list[list] = [[
+        Paragraph("DESCRIPTION", eyebrow_style), Paragraph("AMOUNT", eyebrow_style)
+    ]]
+    for item in invoice.line_items or []:
+        label = str(item.get("label") or "Item")
+        kind = str(item.get("kind") or "")
+        description = ""
+        if kind == "package" and accepted_package.get("name") == label:
+            description = accepted_package.get("full_description") or accepted_package.get("short_description") or ""
+        elif kind == "add_on":
+            description = str((accepted_add_ons.get(label) or {}).get("description") or "")
+        content: list = [Paragraph(html.escape(label), item_title_style)]
+        for part, bullet in invoice_description_parts(description):
+            content.append(Paragraph(html.escape(part), item_detail_style,
+                                     bulletText="•" if bullet else None))
+        item_rows.append([
+            content,
+            Paragraph(invoice_money(int(item.get("price_pence", 0))), amount_style),
+        ])
+    items = LongTable(item_rows, colWidths=[132 * mm, 42 * mm], repeatRows=1,
+                      splitByRow=1, splitInRow=1)
+    items.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), paper),
+        ("BOX", (0, 0), (-1, -1), 0.5, line),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.7, accent),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.35, line),
+        ("LINEBEFORE", (1, 0), (1, -1), 0.35, line),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 1), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+    ]))
+
+    outstanding = max(0, invoice.total_pence - invoice.paid_pence)
+    totals = Table([
+        [Paragraph("Subtotal", body_style), Paragraph(invoice_money(invoice.total_pence), amount_style)],
+        [Paragraph("Paid", body_style), Paragraph(invoice_money(invoice.paid_pence), amount_style)],
+        [Paragraph("TOTAL OUTSTANDING", total_label_style), Paragraph(invoice_money(outstanding), total_amount_style)],
+    ], colWidths=[59 * mm, 39 * mm], hAlign="RIGHT")
+    totals.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEABOVE", (0, -1), (-1, -1), 1, accent),
+    ]))
+
+    schedule_rows: list[list] = [[
+        Paragraph("PAYMENT SCHEDULE", eyebrow_style), "", "", ""
+    ]]
+    paid_remaining = invoice.paid_pence
+    for schedule in invoice.payment_schedule or []:
+        amount = int(schedule.get("amount_pence") or 0)
+        paid_for_line = min(max(paid_remaining, 0), amount)
+        paid_remaining -= paid_for_line
+        line_status = "Paid" if paid_for_line >= amount and amount else (
+            "Part paid" if paid_for_line else "Scheduled"
+        )
+        due_value = schedule.get("due_date") or "Date to be confirmed"
+        try:
+            due_value = date.fromisoformat(str(due_value)).strftime("%d %B %Y")
+        except ValueError:
+            pass
+        schedule_rows.append([
+            Paragraph(html.escape(str(schedule.get("label") or "Payment")), body_style),
+            Paragraph(invoice_money(amount), amount_style),
+            Paragraph(line_status, small_style),
+            Paragraph(html.escape(str(due_value)), small_style),
+        ])
+    schedule_table = Table(schedule_rows, colWidths=[64 * mm, 35 * mm, 29 * mm, 46 * mm], repeatRows=1)
+    schedule_table.setStyle(TableStyle([
+        ("SPAN", (0, 0), (-1, 0)),
+        ("BACKGROUND", (0, 0), (-1, 0), paper),
+        ("BOX", (0, 0), (-1, -1), 0.5, line),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, line),
+        ("LINEBELOW", (0, 1), (-1, -2), 0.3, line),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+
+    payment_lines = [
+        f"<b>PAYMENT REFERENCE: {html.escape(invoice.number)}</b>",
+        f"Please use {html.escape(invoice.number)} for every bank transfer for this wedding.",
+    ]
+    tax_note = str(branding.get("invoice_tax_note") or "").strip()
+    if tax_note:
+        payment_lines.append(html.escape(tax_note))
+    bank_lines = [
+        ("Account name", branding.get("bank_account_name")),
+        ("Sort code", branding.get("bank_sort_code")),
+        ("Account number", branding.get("bank_account_number")),
+    ]
+    payment_lines += [f"<b>{label}:</b> {html.escape(str(value))}" for label, value in bank_lines if value]
+    payment_note = str(branding.get("invoice_payment_note") or "").strip()
+    if payment_note:
+        payment_lines.append(html.escape(payment_note).replace("\n", "<br/>"))
+    payment_panel = Table([[Paragraph("<br/><br/>".join(payment_lines), body_style)]], colWidths=[174 * mm])
+    payment_panel.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), pale),
+        ("BOX", (0, 0), (-1, -1), 0.5, line),
+        ("LEFTPADDING", (0, 0), (-1, -1), 11),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 11),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+
+    story: list = [header, Spacer(1, 3 * mm), seller, Spacer(1, 4 * mm)]
+    accent_rule = Table([[""]], colWidths=[174 * mm], rowHeights=[1.2 * mm])
+    accent_rule.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), accent)]))
+    story += [accent_rule, Spacer(1, 8 * mm), parties, Spacer(1, 9 * mm), items,
+              Spacer(1, 6 * mm), totals, Spacer(1, 9 * mm)]
+    if len(schedule_rows) > 1:
+        story.append(KeepTogether([schedule_table, Spacer(1, 7 * mm), payment_panel]))
+    else:
+        story.append(payment_panel)
+    if email_branding and email_branding.show_badge and email_branding.badge_path:
+        badge_path = Path(email_branding.badge_path)
+        if badge_path.is_file():
+            try:
+                badge = ReportLabImage(str(badge_path))
+                badge._restrictSize(60 * mm, 25 * mm)
+                badge.hAlign = "CENTER"
+                story += [Spacer(1, 7 * mm), badge]
+            except Exception:
+                pass
+
+    stream = io.BytesIO()
+    filename = f"{booking.title}-{booking.event_date or 'date-tbc'}-{invoice.number}"
+    document = SimpleDocTemplate(
+        stream, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=16 * mm, bottomMargin=18 * mm, title=filename,
+        author=business_name, subject=f"Invoice {invoice.number}",
+    )
+
+    def invoice_footer(canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setStrokeColor(line)
+        canvas.setLineWidth(0.5)
+        canvas.line(18 * mm, 12 * mm, A4[0] - 18 * mm, 12 * mm)
+        canvas.setFont(sans_font, 7)
+        canvas.setFillColor(muted)
+        canvas.drawString(18 * mm, 8 * mm, f"{business_name} · {invoice.number}")
+        canvas.drawRightString(A4[0] - 18 * mm, 8 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=invoice_footer, onLaterPages=invoice_footer)
+    return Response(stream.getvalue(), media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{safe_document_name(filename)}.pdf"',
+        "Cache-Control": "private, no-store",
+    })
 
 
 def contract_pdf(tenant: Tenant, booking: Booking, contract: BookingContract) -> Response:

@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app import main as main_module
 from app import messaging as messaging_module
 from app.database import SessionLocal
-from app.main import app, ensure_compatibility_columns, ensure_public_mail_host
+from app.main import (app, ensure_compatibility_columns, ensure_public_mail_host,
+                      invoice_description_parts)
 from app.messaging import send_tenant_email as real_send_tenant_email
 from app.models import EmailMessage, MailboxSetting, WorkflowAction
 from app.security import encrypt_secret, utcnow
@@ -19,6 +20,18 @@ from app.worker import process_billing_statuses
 
 def csrf(client: TestClient) -> dict:
     return {"X-CSRF-Token": client.cookies.get("ivory_booking_csrf")}
+
+
+def test_invoice_package_description_spacing():
+    parts = invoice_description_parts(
+        "Full day photography\n\n• Up to 8 hours coverage\n* Online gallery\n- Highlight film"
+    )
+    assert parts == [
+        ("Full day photography", False),
+        ("Up to 8 hours coverage", True),
+        ("Online gallery", True),
+        ("Highlight film", True),
+    ]
 
 
 def make_tenant(manager: TestClient, name: str, slug: str, email: str) -> dict:
@@ -110,6 +123,24 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
 
         alpha_client = accept(alpha, "Alex Alpha")
         beta_client = accept(beta, "Ben Beta")
+
+        invoice_branding = alpha_client.patch(
+            "/api/studio/branding", headers=csrf(alpha_client), json={
+                "display_name": "Alpha Weddings", "accent_colour": "#a9782e",
+                "welcome_message": "Welcome to your private booking area.",
+                "invoice_business_address": "1 Studio Lane\nManchester\nM1 1AA",
+                "invoice_email": "accounts@alpha.example",
+                "invoice_phone": "0161 000 0000",
+                "invoice_website": "https://alpha.example",
+                "bank_account_name": "Alpha Weddings Ltd",
+                "bank_sort_code": "04-00-00",
+                "bank_account_number": "12345678",
+                "invoice_tax_note": "No VAT has been charged on this invoice.",
+                "invoice_payment_note": "Thank you for your booking.",
+            },
+        )
+        assert invoice_branding.status_code == 200, invoice_branding.text
+        assert invoice_branding.json()["branding"]["bank_account_number"] == "12345678"
 
         billing_centre = manager.get("/api/manager/billing")
         assert billing_centre.status_code == 200
@@ -667,6 +698,7 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert invoice_pdf.status_code == 200
         assert invoice_pdf.headers["content-type"] == "application/pdf"
         assert invoice_pdf.content.startswith(b"%PDF")
+        assert len(invoice_pdf.content) > 4000
         locked_amendment = alpha_client.post(
             f"/api/studio/bookings/{booking_id}/quote/amend", headers=csrf(alpha_client), json={
                 "label": "Must not be added", "price_pence": 0, "reason": "Testing the lock",

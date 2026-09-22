@@ -1,0 +1,13 @@
+PHASE 5.6.6 - PROFESSIONAL INVOICE CHECKLIST
+
+1. Open Setup > Business & Brand.
+2. Complete Invoice and payment details.
+3. Save the business details.
+4. Open the test wedding and download its invoice PDF.
+5. Confirm the uploaded logo or business name appears at the top.
+6. Confirm business and couple details are readable.
+7. Confirm the package description has clear spacing and bullet lines.
+8. Confirm add-ons, discounts, paid and outstanding totals are correct.
+9. Confirm the payment schedule and bank details appear together.
+10. Confirm the footer shows the invoice reference and page number.
+
