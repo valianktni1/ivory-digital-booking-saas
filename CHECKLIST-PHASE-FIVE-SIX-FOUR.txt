@@ -1,0 +1,19 @@
+PHASE 5.6.4 — QUOTE TEMPLATE WORKFLOW CHECKLIST
+
+[ ] Packages & pricing still looks and works exactly as before.
+[ ] Quote templates appears as its own Setup item.
+[ ] A template can contain several packages.
+[ ] Each included add-on can be optional or compulsory.
+[ ] Private discounts can be included.
+[ ] An agreement and post-acceptance forms can be attached.
+[ ] Quote templates from another tenant are never visible or editable.
+[ ] Opening an enquiry does not move it into Weddings.
+[ ] Choosing a quote template prepares the correct package/add-on snapshot.
+[ ] Choosing a quote template opens the email-review step.
+[ ] The quote email can be selected from saved email templates.
+[ ] Couple-specific wording can be added without editing the master template.
+[ ] The branded View your quote button is visible in the preview.
+[ ] The sent HTML email contains the secure private quote button.
+[ ] Sending leaves the record in Enquiries.
+[ ] Acceptance moves the record into Weddings and creates the invoice/agreement.
+[ ] Browser refresh is not required for the prepared state to appear.

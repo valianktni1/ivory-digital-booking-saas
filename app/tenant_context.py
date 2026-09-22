@@ -43,6 +43,7 @@ def install_postgres_rls(db: Session) -> None:
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
     for table_name in ("clients", "bookings", "service_packages", "package_add_ons",
+                       "quote_templates",
                        "workflows", "workflow_steps", "workflow_revisions",
                        "enquiry_form_configs", "enquiry_form_questions",
                        "enquiries", "enquiry_answers", "mailbox_settings",

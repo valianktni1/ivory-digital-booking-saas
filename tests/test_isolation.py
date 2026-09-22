@@ -258,6 +258,31 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert compulsory_discount.status_code == 422
         assert beta_client.get("/api/studio/add-ons").json() == []
 
+        quote_template = alpha_client.post(
+            "/api/studio/quote-templates", headers=csrf(alpha_client), json={
+                "name": "Wedding collections",
+                "introduction": "I have prepared these choices especially for your wedding.",
+                "package_ids": [package.json()["id"]],
+                "add_on_ids": [optional.json()["id"]],
+                "required_add_on_ids": [optional.json()["id"]],
+                "discount_ids": [private_discount.json()["id"]],
+                "questionnaire_form_types": ["booking", "final_timings"],
+                "notes": "Main enquiry quote", "auto_generate_invoice": True,
+                "is_active": True, "sort_order": 0,
+            },
+        )
+        assert quote_template.status_code == 201, quote_template.text
+        assert quote_template.json()["required_add_on_ids"] == [optional.json()["id"]]
+        assert len(alpha_client.get("/api/studio/quote-templates").json()) == 1
+        assert beta_client.get("/api/studio/quote-templates").json() == []
+        cross_quote_template = beta_client.put(
+            f"/api/studio/quote-templates/{quote_template.json()['id']}",
+            headers=csrf(beta_client), json={
+                "name": "Must not cross tenants", "package_ids": [package.json()["id"]],
+            },
+        )
+        assert cross_quote_template.status_code == 404
+
         forms = alpha_client.get("/api/studio/questionnaire-templates")
         assert forms.status_code == 200, forms.text
         forms_by_type = {row["form_type"]: row for row in forms.json()}
@@ -414,6 +439,30 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
             },
         )
         assert contract_template.status_code == 201, contract_template.text
+        updated_quote_template = alpha_client.put(
+            f"/api/studio/quote-templates/{quote_template.json()['id']}",
+            headers=csrf(alpha_client), json={
+                "name": "Wedding collections",
+                "introduction": "I have prepared these choices especially for your wedding.",
+                "package_ids": [package.json()["id"]],
+                "add_on_ids": [optional.json()["id"]],
+                "required_add_on_ids": [optional.json()["id"]],
+                "discount_ids": [private_discount.json()["id"]],
+                "contract_template_id": contract_template.json()["id"],
+                "questionnaire_form_types": ["booking", "final_timings"],
+                "notes": "Main enquiry quote", "auto_generate_invoice": True,
+                "is_active": True, "sort_order": 0,
+            },
+        )
+        assert updated_quote_template.status_code == 200, updated_quote_template.text
+        applied_template = alpha_client.post(
+            f"/api/studio/bookings/{booking_id}/quote/from-template/{quote_template.json()['id']}",
+            headers=csrf(alpha_client),
+        )
+        assert applied_template.status_code == 200, applied_template.text
+        assert applied_template.json()["quote"]["quote_template_name"] == "Wedding collections"
+        assert applied_template.json()["quote"]["contract_template_id"] == contract_template.json()["id"]
+        assert applied_template.json()["quote"]["add_ons"][0]["selection_mode"] == "mandatory"
         quote = alpha_client.put(
             f"/api/studio/bookings/{booking_id}/quote", headers=csrf(alpha_client), json={
                 "package_ids": [package.json()["id"]], "add_on_ids": [optional.json()["id"]],
@@ -428,6 +477,8 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         )
         assert quote.status_code == 200, quote.text
         assert quote.json()["quote"]["add_ons"][0]["selection_mode"] == "mandatory"
+        assert quote.json()["quote"]["quote_template_id"] == quote_template.json()["id"]
+        assert quote.json()["quote"]["contract_template_id"] == contract_template.json()["id"]
         saved_discount = next(
             item for item in quote.json()["quote"]["custom_items"]
             if item.get("catalog_add_on_id") == private_discount.json()["id"]
@@ -435,12 +486,24 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert saved_discount["label"] == "Wedding fair discount"
         assert saved_discount["price_pence"] == -5000
         assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_draft"
+        personal_quote_email = alpha_client.post(
+            "/api/studio/email-templates", headers=csrf(alpha_client), json={
+                "name": "My warm quote email", "category": "Quote",
+                "subject": "A personal quote for {{couple_names}}",
+                "body": "Hi {{couple_first_name}},\n\nI loved hearing about your plans at {{venue}}.",
+                "is_active": True,
+            },
+        )
+        assert personal_quote_email.status_code == 201, personal_quote_email.text
         preview = alpha_client.get(
             f"/api/studio/bookings/{booking_id}/quote/email-preview"
+            f"?template_id={personal_quote_email.json()['id']}"
         )
         assert preview.status_code == 200, preview.text
         assert preview.json()["recipient"] == "taylor@example.com"
         assert preview.json()["portal_url"] in preview.json()["body"]
+        assert preview.json()["template_id"] == personal_quote_email.json()["id"]
+        assert preview.json()["subject"] == "A personal quote for Taylor & Jordan"
 
         with SessionLocal() as db:
             db.add(MailboxSetting(
@@ -458,7 +521,8 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         monkeypatch.setattr(main_module, "send_tenant_email", failed_send)
         failed_quote = alpha_client.post(
             f"/api/studio/bookings/{booking_id}/quote/send", headers=csrf(alpha_client),
-            json={"subject": preview.json()["subject"], "body": preview.json()["body"]},
+            json={"template_id": personal_quote_email.json()["id"],
+                  "subject": preview.json()["subject"], "body": preview.json()["body"]},
         )
         assert failed_quote.status_code == 422, failed_quote.text
         failed_state = alpha_client.get(f"/api/studio/bookings/{booking_id}/journey").json()
@@ -485,10 +549,13 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         monkeypatch.setattr(main_module, "send_tenant_email", successful_send)
         sent_quote = alpha_client.post(
             f"/api/studio/bookings/{booking_id}/quote/send", headers=csrf(alpha_client),
-            json={"subject": preview.json()["subject"], "body": preview.json()["body"]},
+            json={"template_id": personal_quote_email.json()["id"],
+                  "subject": preview.json()["subject"], "body": preview.json()["body"]},
         )
         assert sent_quote.status_code == 200, sent_quote.text
         assert sent_quote.json()["automatic_email_sent"] is True
+        assert sent_payloads[-1]["template_id"] == personal_quote_email.json()["id"]
+        assert sent_payloads[-1]["extra"]["action_label"] == "View your quote"
         assert alpha_client.get("/api/studio/enquiries").json()[0]["status"] == "quote_sent"
         assert alpha_client.get("/api/studio/bookings").json() == []
         portal_token = sent_quote.json()["portal_url"].rsplit("/", 1)[-1]
@@ -805,7 +872,7 @@ def test_manager_mfa_and_cross_tenant_isolation(monkeypatch):
         assert edited_template.status_code == 200, edited_template.text
         assert edited_template.json()["subject"] == "Your venue information"
         alpha_templates = alpha_client.get("/api/studio/email-templates").json()
-        assert len(alpha_templates) == 9
+        assert len(alpha_templates) == 10
         assert {row["name"] for row in alpha_templates} >= {
             "Wedding quote", "Contract signed by both parties", "Wedding planning check-in",
             "Final timings request", "Venue information"

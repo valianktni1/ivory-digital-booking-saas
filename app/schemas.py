@@ -254,6 +254,7 @@ class EnquiryConvertIn(BaseModel):
 class QuoteEmailSendIn(BaseModel):
     subject: str = Field(min_length=1, max_length=220)
     body: str = Field(min_length=1, max_length=30000)
+    template_id: str | None = None
 
 
 class QuoteDraftIn(BaseModel):
@@ -288,6 +289,28 @@ class QuoteDraftIn(BaseModel):
                 cleaned_item["catalog_add_on_id"] = catalog_id
             cleaned.append(cleaned_item)
         return cleaned
+
+
+class QuoteTemplateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    introduction: str = Field(default="", max_length=4000)
+    package_ids: list[str] = Field(default_factory=list, min_length=1, max_length=20)
+    add_on_ids: list[str] = Field(default_factory=list, max_length=60)
+    required_add_on_ids: list[str] = Field(default_factory=list, max_length=60)
+    discount_ids: list[str] = Field(default_factory=list, max_length=30)
+    contract_template_id: str | None = None
+    questionnaire_form_types: list[Literal["booking", "final_timings"]] = Field(
+        default_factory=lambda: ["booking", "final_timings"], max_length=2
+    )
+    notes: str = Field(default="", max_length=4000)
+    auto_generate_invoice: bool = True
+    is_active: bool = True
+    sort_order: int = Field(default=0, ge=0, le=10000)
+
+    @field_validator("required_add_on_ids")
+    @classmethod
+    def required_items_are_unique(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(values))
 
 
 class QuoteAcceptIn(BaseModel):

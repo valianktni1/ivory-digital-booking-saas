@@ -205,6 +205,32 @@ class PackageAddOn(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class QuoteTemplate(Base):
+    """Reusable pick-and-choose quote assembled from the tenant's catalogue."""
+    __tablename__ = "quote_templates"
+    __table_args__ = (
+        Index("ix_quote_templates_tenant_order", "tenant_id", "sort_order"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    introduction: Mapped[str] = mapped_column(Text, default="")
+    package_ids: Mapped[list] = mapped_column(JSON, default=list)
+    add_on_ids: Mapped[list] = mapped_column(JSON, default=list)
+    required_add_on_ids: Mapped[list] = mapped_column(JSON, default=list)
+    discount_ids: Mapped[list] = mapped_column(JSON, default=list)
+    contract_template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tenant_contract_templates.id", ondelete="SET NULL"), nullable=True
+    )
+    questionnaire_form_types: Mapped[list] = mapped_column(JSON, default=list)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    auto_generate_invoice: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class Workflow(Base):
     __tablename__ = "workflows"
     __table_args__ = (

@@ -39,7 +39,7 @@ from .models import (AuditLog, Booking, BookingContract, BookingDocument, Bookin
                      BookingNote, EmailMessage, EmailTemplate,
                      EnquiryFormConfig, EnquiryFormQuestion, Invitation,
                      HelpArticle, MailboxSetting, Membership,
-                     MembershipRole, PackageAddOn, QuestionnaireSubmission,
+                     MembershipRole, PackageAddOn, QuoteTemplate, QuestionnaireSubmission,
                      PlatformBillingPayment,
                      QuestionnaireTemplate, ServicePackage, Tenant,
                      TenantSubscription,
@@ -59,7 +59,7 @@ from .schemas import (AccountAccessIn, AutomationPauseIn, BillingSettingsIn,
                       InvitationAcceptIn, LoginIn, AddOnIn, MailboxSettingsIn,
                       ManualEmailIn, NoteIn, PackageIn, PaymentRecordIn, PlatformPaymentIn, PublicEnquiryIn,
                       QuestionnaireSubmitIn, QuestionnaireTemplateIn,
-                      QuoteAcceptIn, QuoteAmendmentIn, QuoteDraftIn, QuoteEmailSendIn, SpecialPaymentIn,
+                      QuoteAcceptIn, QuoteAmendmentIn, QuoteDraftIn, QuoteEmailSendIn, QuoteTemplateIn, SpecialPaymentIn,
                       TenantCreateIn, TenantStatusIn, TotpConfirmIn, TrialExtensionIn,
                       TaskIn, TaskUpdateIn, WorkflowActionReviewIn,
                       WorkflowBookingControlIn, WorkflowIn, WorkflowModeIn,
@@ -140,8 +140,8 @@ DEFAULT_HELP_ARTICLES = (
         "slug": "create-and-send-quote", "title": "How do I prepare a quote?",
         "category": "Quotes", "contexts": ["enquiries", "weddings"], "tour_key": "enquiries",
         "keywords": ["quote", "quotation", "send quote", "package choice", "client link", "prepare quote"],
-        "summary": "Choose what to offer, save the draft, review the exact email and send deliberately.",
-        "body": "Open Enquiries and select the couple. Tick the packages and extras you want to offer, add any custom item or discount, then save the draft. Saving never sends an email.\n\nChoose Save & review email to check the recipient, subject, message and secure link. Personal changes affect only this couple. The quote is sent only when you press Send quote now.",
+        "summary": "Choose a saved quote template, personalise its email and send the secure quote deliberately.",
+        "body": "First build your packages and add-ons, then group them in Setup > Quote templates. Open Enquiries, select the couple and choose the saved quote template you want to use. Studio prepares the package choices without moving the enquiry into Weddings.\n\nNext choose your saved quote email, add anything personal about this enquiry, and review the subject and message. The branded View your quote button and secure private link are included automatically. Nothing sends until you press Send quote now.",
         "action_label": "Open enquiries", "action_route": "enquiries", "sort_order": 40,
     },
     {
@@ -474,7 +474,7 @@ def ensure_help_catalog(db: Session) -> None:
         added = True
         added = True
     for slug, marker in (("turn-enquiry-into-wedding", "start client journey"),
-                         ("create-and-send-quote", "prepare quote link")):
+                         ("create-and-send-quote", "tick the packages")):
         row = existing_rows.get(slug)
         if row and marker in row.body.lower():
             current = next(item for item in DEFAULT_HELP_ARTICLES if item["slug"] == slug)
@@ -631,7 +631,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.6.3-catalogue-layout",
+    version="0.5.6.4-quote-templates",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -699,7 +699,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.21-phase-five-six-three-catalogue-layout", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.22-phase-five-six-four-quote-templates", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1505,6 +1505,20 @@ def add_on_json(row: PackageAddOn) -> dict:
             "sort_order": row.sort_order}
 
 
+def quote_template_json(row: QuoteTemplate) -> dict:
+    return {
+        "id": row.id, "name": row.name, "introduction": row.introduction or "",
+        "package_ids": row.package_ids or [], "add_on_ids": row.add_on_ids or [],
+        "required_add_on_ids": row.required_add_on_ids or [],
+        "discount_ids": row.discount_ids or [],
+        "contract_template_id": row.contract_template_id,
+        "questionnaire_form_types": row.questionnaire_form_types or [],
+        "notes": row.notes or "", "auto_generate_invoice": row.auto_generate_invoice,
+        "is_active": row.is_active, "sort_order": row.sort_order,
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
 def step_json(row: WorkflowStep, mode: str | None = None) -> dict:
     return {"id": row.id, "workflow_id": row.workflow_id, "name": row.name,
             "trigger_event": row.trigger_event, "timing_direction": row.timing_direction,
@@ -1607,6 +1621,39 @@ def validate_add_on_packages(db: Session, tenant_id: str, payload: AddOnIn) -> N
         ServicePackage.id.in_(wanted))).all())
     if found != wanted:
         raise HTTPException(422, "One or more eligible packages are not available in this studio")
+
+
+def validate_quote_template(db: Session, tenant_id: str, payload: QuoteTemplateIn) -> None:
+    package_ids = set(payload.package_ids)
+    found_packages = set(db.scalars(select(ServicePackage.id).where(
+        ServicePackage.tenant_id == tenant_id,
+        ServicePackage.id.in_(package_ids),
+    )).all())
+    if found_packages != package_ids:
+        raise HTTPException(422, "One or more quote-template packages are not available in this studio")
+    selected_add_ons = set(payload.add_on_ids)
+    required_add_ons = set(payload.required_add_on_ids)
+    if not required_add_ons.issubset(selected_add_ons):
+        raise HTTPException(422, "Every compulsory item must also be included in the quote template")
+    wanted_items = selected_add_ons | set(payload.discount_ids)
+    rows = db.scalars(select(PackageAddOn).where(
+        PackageAddOn.tenant_id == tenant_id,
+        PackageAddOn.id.in_(wanted_items),
+    )).all() if wanted_items else []
+    by_id = {row.id: row for row in rows}
+    if set(by_id) != wanted_items:
+        raise HTTPException(422, "One or more quote-template extras are not available in this studio")
+    if any(by_id[item_id].is_discount for item_id in selected_add_ons):
+        raise HTTPException(422, "Private discounts must be selected as discounts, not add-ons")
+    if any(not by_id[item_id].is_discount for item_id in payload.discount_ids):
+        raise HTTPException(422, "Only private discounts can be added to the discount section")
+    if payload.contract_template_id:
+        contract = db.scalar(select(TenantContractTemplate.id).where(
+            TenantContractTemplate.id == payload.contract_template_id,
+            TenantContractTemplate.tenant_id == tenant_id,
+        ))
+        if not contract:
+            raise HTTPException(422, "The selected agreement template is not available in this studio")
 
 
 def validate_workflow_step(payload: WorkflowStepIn) -> None:
@@ -1889,6 +1936,68 @@ def delete_add_on(add_on_id: str, request: Request,
     audit(db, "add_on_deleted", "package_add_on", row.id, actor=session.user,
           tenant_id=tenant.id, request=request, detail={"name": row.name})
     db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/studio/quote-templates")
+def list_quote_templates(context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    rows = db.scalars(select(QuoteTemplate).where(
+        QuoteTemplate.tenant_id == tenant.id
+    ).order_by(QuoteTemplate.sort_order, QuoteTemplate.created_at)).all()
+    return [quote_template_json(row) for row in rows]
+
+
+@app.post("/api/studio/quote-templates", status_code=201)
+def create_quote_template(payload: QuoteTemplateIn, request: Request,
+                          session: UserSession = Depends(require_csrf),
+                          db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    validate_quote_template(db, tenant.id, payload)
+    row = QuoteTemplate(tenant_id=tenant.id, **payload.model_dump())
+    db.add(row); db.flush()
+    audit(db, "quote_template_created", "quote_template", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit()
+    return quote_template_json(row)
+
+
+@app.put("/api/studio/quote-templates/{template_id}")
+def update_quote_template(template_id: str, payload: QuoteTemplateIn, request: Request,
+                          session: UserSession = Depends(require_csrf),
+                          db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(QuoteTemplate).where(
+        QuoteTemplate.id == template_id,
+        QuoteTemplate.tenant_id == tenant.id,
+    ))
+    if not row:
+        raise HTTPException(404, "Quote template not found")
+    validate_quote_template(db, tenant.id, payload)
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    audit(db, "quote_template_updated", "quote_template", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit()
+    return quote_template_json(row)
+
+
+@app.delete("/api/studio/quote-templates/{template_id}")
+def delete_quote_template(template_id: str, request: Request,
+                          session: UserSession = Depends(require_csrf),
+                          db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    row = db.scalar(select(QuoteTemplate).where(
+        QuoteTemplate.id == template_id,
+        QuoteTemplate.tenant_id == tenant.id,
+    ))
+    if not row:
+        raise HTTPException(404, "Quote template not found")
+    name = row.name
+    db.delete(row)
+    audit(db, "quote_template_deleted", "quote_template", row.id,
+          actor=session.user, tenant_id=tenant.id, request=request, detail={"name": name})
     db.commit()
     return {"ok": True}
 
@@ -2377,12 +2486,19 @@ def contract_json(row: BookingContract | None) -> dict | None:
 
 
 def issue_active_contract_snapshot(db: Session, tenant: Tenant,
-                                   booking: Booking) -> BookingContract | None:
+                                   booking: Booking,
+                                   template_id: str | None = None) -> BookingContract | None:
     """Attach the latest active agreement without inventing legal wording."""
-    template = db.scalar(select(TenantContractTemplate).where(
-        TenantContractTemplate.tenant_id == tenant.id,
-        TenantContractTemplate.is_active.is_(True)
-    ).order_by(TenantContractTemplate.updated_at.desc()).limit(1))
+    if template_id:
+        template = db.scalar(select(TenantContractTemplate).where(
+            TenantContractTemplate.id == template_id,
+            TenantContractTemplate.tenant_id == tenant.id,
+        ))
+    else:
+        template = db.scalar(select(TenantContractTemplate).where(
+            TenantContractTemplate.tenant_id == tenant.id,
+            TenantContractTemplate.is_active.is_(True)
+        ).order_by(TenantContractTemplate.updated_at.desc()).limit(1))
     if not template:
         return None
     row = db.scalar(select(BookingContract).where(
@@ -2980,16 +3096,25 @@ def cancel_open_enquiry_actions(db: Session, tenant_id: str, enquiry_id: str,
 
 
 def quote_email_copy(db: Session, tenant: Tenant, booking: Booking,
-                     journey: BookingJourney) -> dict:
+                     journey: BookingJourney, template_id: str | None = None) -> dict:
     ensure_starter_email_templates(db, tenant)
     client = db.scalar(select(Client).where(
         Client.id == booking.client_id, Client.tenant_id == tenant.id))
-    template = db.scalar(select(EmailTemplate).where(
-        EmailTemplate.tenant_id == tenant.id,
-        EmailTemplate.is_active.is_(True),
-        or_(func.lower(EmailTemplate.category) == "quote",
-            func.lower(EmailTemplate.name).like("%quote%"))
-    ).order_by(EmailTemplate.updated_at.desc()).limit(1))
+    if template_id:
+        template = db.scalar(select(EmailTemplate).where(
+            EmailTemplate.id == template_id,
+            EmailTemplate.tenant_id == tenant.id,
+            EmailTemplate.is_active.is_(True),
+        ))
+        if not template:
+            raise HTTPException(404, "Email template not found")
+    else:
+        template = db.scalar(select(EmailTemplate).where(
+            EmailTemplate.tenant_id == tenant.id,
+            EmailTemplate.is_active.is_(True),
+            or_(func.lower(EmailTemplate.category) == "quote",
+                func.lower(EmailTemplate.name).like("%quote%"))
+        ).order_by(EmailTemplate.updated_at.desc()).limit(1))
     subject = template.subject if template else "Your wedding quote from {{business_name}}"
     body = template.body if template else (
         "Hi {{couple_first_name}},\n\n"
@@ -2999,7 +3124,7 @@ def quote_email_copy(db: Session, tenant: Tenant, booking: Booking,
     )
     link = portal_url(journey)
     if "{{client_portal_link}}" not in body and link not in body:
-        body = f"{body.rstrip()}\n\nView your private quote here: {{client_portal_link}}"
+        body = body.rstrip() + "\n\nView your private quote here: {{client_portal_link}}"
     extra = {"client_portal_link": link}
     return {
         "recipient": client.email if client else "",
@@ -3018,7 +3143,14 @@ def save_quote(booking_id: str, payload: QuoteDraftIn, request: Request,
     booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
     if journey.accepted_quote:
         raise HTTPException(409, "This quote has been accepted and its snapshot cannot be changed")
-    journey.quote_state = quote_snapshot(db, tenant.id, payload)
+    existing = dict(journey.quote_state or {})
+    snapshot = quote_snapshot(db, tenant.id, payload)
+    for key in ("quote_template_id", "quote_template_name", "template_notes",
+                "contract_template_id", "questionnaire_form_types",
+                "auto_generate_invoice"):
+        if key in existing:
+            snapshot[key] = existing[key]
+    journey.quote_state = snapshot
     booking.status = "quote_preparation"
     enquiry = enquiry_for_journey(db, journey)
     if enquiry and booking.is_provisional:
@@ -3030,15 +3162,63 @@ def save_quote(booking_id: str, payload: QuoteDraftIn, request: Request,
     return result
 
 
+@app.post("/api/studio/bookings/{booking_id}/quote/from-template/{template_id}")
+def apply_quote_template(booking_id: str, template_id: str, request: Request,
+                         session: UserSession = Depends(require_csrf),
+                         db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    booking = studio_booking(db, tenant.id, booking_id)
+    journey = booking_journey(db, booking)
+    if journey.accepted_quote:
+        raise HTTPException(409, "This quote has been accepted and its snapshot cannot be changed")
+    template = db.scalar(select(QuoteTemplate).where(
+        QuoteTemplate.id == template_id,
+        QuoteTemplate.tenant_id == tenant.id,
+        QuoteTemplate.is_active.is_(True),
+    ))
+    if not template:
+        raise HTTPException(404, "Quote template not found")
+    payload = QuoteDraftIn(
+        package_ids=template.package_ids or [],
+        add_on_ids=template.add_on_ids or [],
+        required_add_on_ids=template.required_add_on_ids or [],
+        custom_items=[{"label": "Saved discount", "price_pence": 0,
+                       "catalog_add_on_id": item_id}
+                      for item_id in (template.discount_ids or [])],
+        message=template.introduction or "",
+    )
+    quote = quote_snapshot(db, tenant.id, payload)
+    quote.update({
+        "quote_template_id": template.id,
+        "quote_template_name": template.name,
+        "template_notes": template.notes or "",
+        "contract_template_id": template.contract_template_id,
+        "questionnaire_form_types": template.questionnaire_form_types or [],
+        "auto_generate_invoice": template.auto_generate_invoice,
+    })
+    journey.quote_state = quote
+    booking.status = "quote_preparation"
+    enquiry = enquiry_for_journey(db, journey)
+    if enquiry and booking.is_provisional:
+        enquiry.status = "quote_draft"
+    audit(db, "quote_template_applied", "booking", booking.id, actor=session.user,
+          tenant_id=tenant.id, request=request,
+          detail={"quote_template_id": template.id, "quote_template_name": template.name})
+    result = journey_json(db, booking, journey)
+    db.commit()
+    return result
+
+
 @app.get("/api/studio/bookings/{booking_id}/quote/email-preview")
-def preview_quote_email(booking_id: str, context=Depends(studio_context),
+def preview_quote_email(booking_id: str, template_id: str | None = None,
+                        context=Depends(studio_context),
                         db: Session = Depends(get_db)):
     _, _, tenant = context
     booking = studio_booking(db, tenant.id, booking_id); journey = booking_journey(db, booking)
     quote_state = dict(journey.quote_state or {})
     if not quote_state.get("packages"):
         raise HTTPException(422, "Add at least one package before reviewing the quote email")
-    return quote_email_copy(db, tenant, booking, journey)
+    return quote_email_copy(db, tenant, booking, journey, template_id)
 
 
 @app.post("/api/studio/bookings/{booking_id}/quote/send")
@@ -3058,7 +3238,8 @@ def send_quote(booking_id: str, request: Request, payload: QuoteEmailSendIn | No
         Client.id == booking.client_id, Client.tenant_id == tenant.id))
     if not client:
         raise HTTPException(404, "The enquiry contact could not be found")
-    copy = quote_email_copy(db, tenant, booking, journey)
+    copy = quote_email_copy(db, tenant, booking, journey,
+                            payload.template_id if payload else None)
     subject = payload.subject.strip() if payload else copy["subject"]
     body = payload.body.strip() if payload else copy["body"]
     link = copy["portal_url"]
@@ -3068,7 +3249,7 @@ def send_quote(booking_id: str, request: Request, payload: QuoteEmailSendIn | No
         message = send_tenant_email(
             db, tenant, mailbox, client.email, subject, body,
             booking=booking, client=client, template_id=copy["template_id"],
-            extra={"client_portal_link": link, "action_label": "Open your wedding quote"},
+            extra={"client_portal_link": link, "action_label": "View your quote"},
         )
     except Exception as exc:
         audit(db, "quote_email_failed", "booking", booking.id, actor=session.user,
@@ -3139,9 +3320,20 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
     data["business"] = {"display_name": (tenant.branding or {}).get("display_name") or tenant.display_name,
                         "accent_colour": (tenant.branding or {}).get("accent_colour") or "#a9782e",
                         "welcome_message": (tenant.branding or {}).get("welcome_message") or "Welcome to your private booking area."}
-    templates = [] if booking.is_provisional else db.scalars(select(QuestionnaireTemplate).where(
+    questionnaire_query = select(QuestionnaireTemplate).where(
         QuestionnaireTemplate.tenant_id == tenant.id,
-        QuestionnaireTemplate.is_active.is_(True)).order_by(QuestionnaireTemplate.form_type)).all()
+        QuestionnaireTemplate.is_active.is_(True))
+    allowed_questionnaires = (journey.accepted_quote or {}).get(
+        "questionnaire_form_types",
+        (journey.quote_state or {}).get("questionnaire_form_types"),
+    )
+    if allowed_questionnaires is not None:
+        questionnaire_query = questionnaire_query.where(
+            QuestionnaireTemplate.form_type.in_(allowed_questionnaires)
+        )
+    templates = [] if booking.is_provisional else db.scalars(
+        questionnaire_query.order_by(QuestionnaireTemplate.form_type)
+    ).all()
     submissions = [] if booking.is_provisional else db.scalars(select(QuestionnaireSubmission).where(
         QuestionnaireSubmission.tenant_id == tenant.id,
         QuestionnaireSubmission.booking_id == booking.id)).all()
@@ -3203,7 +3395,10 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
     accepted = {"accepted_at": utcnow().isoformat(), "accepted_by": payload.client_name,
                 "package": package, "add_ons": selected_addons,
                 "custom_items": quote.get("custom_items", []), "line_items": line_items,
-                "total_pence": total}
+                "total_pence": total,
+                "quote_template_id": quote.get("quote_template_id"),
+                "quote_template_name": quote.get("quote_template_name"),
+                "questionnaire_form_types": quote.get("questionnaire_form_types")}
     journey.accepted_quote = accepted
     journey.booking_fee_pence = min(int(package.get("booking_fee_pence", 0)), total)
     due_days = int(package.get("balance_due_days", 45))
@@ -3221,7 +3416,9 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
     db.add(invoice); db.flush(); booking.status = "quote_accepted"
     booking.is_provisional = False
     booking.promoted_at = booking.promoted_at or utcnow()
-    contract = issue_active_contract_snapshot(db, tenant, booking)
+    contract = issue_active_contract_snapshot(
+        db, tenant, booking, quote.get("contract_template_id")
+    )
     enquiry = enquiry_for_journey(db, journey)
     if enquiry:
         enquiry.status = "booked"
@@ -4707,6 +4904,7 @@ def list_email_templates(context=Depends(studio_context), db: Session = Depends(
 def create_email_template(payload: EmailTemplateIn, request: Request,
                           session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
     membership, tenant = studio_write_context(session, db)
+    ensure_starter_email_templates(db, tenant)
     row = EmailTemplate(tenant_id=tenant.id, **payload.model_dump())
     db.add(row); db.flush(); audit(db, "email_template_created", "email_template", row.id,
                                   actor=session.user, tenant_id=tenant.id, request=request)

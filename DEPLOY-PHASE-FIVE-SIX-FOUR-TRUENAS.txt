@@ -1,0 +1,66 @@
+IVORY DIGITAL BOOKING STUDIO — PHASE 5.6.4
+Build: 2026.09.22-phase-five-six-four-quote-templates
+
+Run each block only after the Phase 5.6.4 files have been committed and pushed to GitHub.
+
+1. Open the app directory and make a database backup
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+
+PHASE564_BACKUP="/mnt/apps/dockge/data/tenantsbookingsystem2026/ivory-booking-before-phase564-$(date +%Y%m%d-%H%M%S).dump"
+
+sudo docker exec tenantsbookingsystem2026-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$PHASE564_BACKUP"
+
+sudo ls -lh "$PHASE564_BACKUP"
+
+2. Pull the committed release
+
+sudo git pull --ff-only
+
+grep -n "phase-five-six-four-quote-templates" app/main.py studio/index.html client/index.html
+
+3. Build all affected images without cache
+
+sudo docker compose -f compose.yaml build --no-cache backend worker studio client
+
+4. Start the backend first so the additive quote_templates table and RLS policy are installed
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate backend
+
+for attempt in $(seq 1 30); do backend_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-backend 2>/dev/null || true); echo "Backend: $backend_health"; test "$backend_health" = "healthy" && break; sleep 2; done
+
+test "$backend_health" = "healthy" && echo "Backend Phase 5.6.4 is healthy"
+
+5. Start Studio, Client and Worker
+
+sudo docker compose -f compose.yaml up -d --no-deps --force-recreate studio client worker
+
+for attempt in $(seq 1 30); do studio_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-studio 2>/dev/null || true); client_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-client 2>/dev/null || true); worker_health=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' tenantsbookingsystem2026-worker 2>/dev/null || true); echo "Studio: $studio_health | Client: $client_health | Worker: $worker_health"; test "$studio_health" = "healthy" -a "$client_health" = "healthy" -a "$worker_health" = "healthy" && break; sleep 2; done
+
+6. Confirm the running release
+
+sudo docker compose -f compose.yaml ps
+
+sudo docker exec tenantsbookingsystem2026-backend sh -c 'grep -q "phase-five-six-four-quote-templates" /app/app/main.py' && echo "Backend image: Phase 5.6.4 confirmed"
+
+sudo docker exec tenantsbookingsystem2026-studio sh -c 'grep -q "phase-five-six-four-quote-templates" /usr/share/nginx/html/index.html' && echo "Studio image: Phase 5.6.4 confirmed"
+
+sudo docker exec tenantsbookingsystem2026-client sh -c 'grep -q "phase-five-six-four-quote-templates" /usr/share/nginx/html/index.html' && echo "Client image: Phase 5.6.4 confirmed"
+
+curl -fsS http://127.0.0.1:30060/ | grep -o 'phase-five-six-four-quote-templates' | head -1
+curl -fsS http://127.0.0.1:30062/ | grep -o 'phase-five-six-four-quote-templates' | head -1
+
+7. Smoke test in a private/incognito browser
+
+- Sign into the test photography tenant.
+- Confirm Setup > Packages & pricing is unchanged.
+- Open Setup > Quote templates and create a template from existing packages/add-ons.
+- Open an enquiry and select that quote template.
+- Confirm the email chooser opens automatically.
+- Choose the quote email template, add a personal sentence and review the View your quote button.
+- Send only to the test address.
+- Confirm the record stays in Enquiries until the test couple accepts.
+
+If the backend does not become healthy, stop and inspect before starting the other services:
+
+sudo docker logs --since 10m --timestamps tenantsbookingsystem2026-backend 2>&1 | tail -250
