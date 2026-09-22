@@ -10,7 +10,7 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release — Phase 5.7
+## Current release — Phase 5.7.1 (help refresh)
 
 Phase 5.7 adds Studio-only date warnings, a deliberately restricted client API,
 itemised live quote totals, saved questionnaire drafts, account recovery,

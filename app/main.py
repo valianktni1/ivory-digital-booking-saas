@@ -453,6 +453,10 @@ def ensure_starter_email_templates(db: Session, tenant: Tenant) -> None:
     db.flush()
 
 
+from .help_phase57 import PHASE57_HELP_ARTICLES
+DEFAULT_HELP_ARTICLES = DEFAULT_HELP_ARTICLES + PHASE57_HELP_ARTICLES
+
+
 def ensure_help_catalog(db: Session) -> None:
     existing_rows = {row.slug: row for row in db.scalars(select(HelpArticle)).all()}
     added = False
@@ -642,7 +646,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.7-private-studio",
+    version="0.5.7.1-help",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -710,7 +714,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.22-phase-five-seven-private-studio", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.22-phase-five-seven-one-help", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")

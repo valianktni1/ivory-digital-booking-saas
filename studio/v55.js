@@ -44,3 +44,10 @@ wireJourneyTab=function(){wireJourneyTabBeforeV55();$('#retry-booking-calendar')
 
 helpContextNames.calendar='Calendar & availability';
 guidedTours.calendar=[['.calendar-connect','One private calendar per studio','Each photographer connects their own Google account, then deliberately chooses a writable calendar.'],['#calendar-picker','Choose the right calendar','Only calendars this photographer can add events to are offered. Changing it safely checks all known Ivory Digital events.'],['#sync-calendar','Check every connected date','Use this any time to retry pending or failed wedding and date-block events.'],['#date-block-form','Block time away','Block a day or holiday period. Studio shows private date warnings; couples never see availability clashes.']];
+
+// Phase 5.7.1 help follows the real controls and skips hidden steps.
+guidedTours.brand.push(['#booking-fee-due-days','Choose your payment deadline','Set days after acceptance for new booking fees. Existing invoices keep their dates.']);
+guidedTours.communications.push(['[data-comms-tab="scheduled"]','See prepared emails','Open Scheduled emails for dates, recipients, status and message previews.']);
+guidedTours.weddings.push(['.private-clash','Private date review','Only your Studio sees this warning. Review coverage yourself; the couple is not shown a clash.'],['.studio-next','Your next action','Open details to reach the relevant booking step.']);
+guidedTours.enquiries.push(['.private-clash','Studio-only date warnings','Overlapping bookings and date blocks appear here privately. Quote acceptance continues normally.']);
+guidedTours.home.push(['#my-subscription','Your plan and payments','Open My subscription for your plan, renewal or trial date and recorded payments.']);

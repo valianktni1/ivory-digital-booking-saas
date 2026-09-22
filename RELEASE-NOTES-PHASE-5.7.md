@@ -1,3 +1,18 @@
+# Phase 5.7.1 — help refresh
+
+Includes all Phase 5.7 improvements below. Adds seven searchable photographer
+help answers, updates tours for payment deadlines, scheduled emails, private
+warnings, next actions and subscription details, and fixes cross-screen tour
+navigation. Existing Manager-edited answers are preserved.
+
+Couples now have an expandable “Need a hand?” guide in their private portal,
+with context-aware “Show me where” buttons. It covers packages, payments,
+agreements, draft saving and final-timings invitations. It contains no date-clash
+information. The original upload did not include a separate interactive client
+help panel; this adds one.
+
+Use the same DEPLOY-PHASE-5.7.sh command; it verifies the new 5.7.1 build marker.
+
 # Ivory Digital Phase 5.7
 
 Build: `2026.09.22-phase-five-seven-private-studio`

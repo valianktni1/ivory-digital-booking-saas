@@ -188,3 +188,20 @@ def test_worker_skips_blocked_studios_and_non_email_queue_items(studio_case,monk
     assert target in sent
     worker.process_workflow_actions()
     assert sent.count(target)==1
+
+
+def test_help_refresh_seeds_once_and_preserves_manager_edits(studio_case):
+    from app.models import HelpArticle
+    from app.help_phase57 import PHASE57_HELP_ARTICLES
+    c=studio_case
+    with SessionLocal() as db:
+        rows=db.scalars(select(HelpArticle).where(HelpArticle.slug.like('phase57-%'))).all()
+        assert len(rows)==7
+        row=rows[0];row.body='Manager custom wording';identifier=row.id;db.commit()
+        main.ensure_help_catalog(db)
+        assert db.get(HelpArticle,identifier).body=='Manager custom wording'
+        assert len(db.scalars(select(HelpArticle).where(HelpArticle.slug.like('phase57-%'))).all())==7
+    response=c.studio.post('/api/studio/help/ask',headers=csrf(c.studio),json={'question':'booking fee due deadline','context':'brand'})
+    assert response.status_code==200
+    assert response.json()['article']['slug']=='phase57-booking-fee-deadline'
+    assert all(item['sort_order']>=0 for item in PHASE57_HELP_ARTICLES)

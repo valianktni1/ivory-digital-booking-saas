@@ -7,11 +7,11 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 compose=(docker compose -f /mnt/apps/dockge/data/tenantsbookingsystem2026/compose.yaml)
-release_marker=phase-five-seven-private-studio
+release_marker=phase-five-seven-one-help
 python3 - <<'PY'
 from pathlib import Path
 for name in ['app/main.py','studio/index.html','client/index.html','manager/index.html']:
-    if 'phase-five-seven-private-studio' not in Path(name).read_text():
+    if 'phase-five-seven-one-help' not in Path(name).read_text():
         raise SystemExit('The complete Phase 5.7 source is not present. Check your GitHub push and private git pull first.')
 PY
 release_stamp=$(date +%Y%m%d-%H%M%S)
