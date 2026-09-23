@@ -7,6 +7,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY client ./client
 RUN addgroup --gid 10001 --system ivory && adduser --uid 10001 --system --ingroup ivory ivory \
     && mkdir -p /app/platform-storage /app/tenant-data \
     && chown -R ivory:ivory /app

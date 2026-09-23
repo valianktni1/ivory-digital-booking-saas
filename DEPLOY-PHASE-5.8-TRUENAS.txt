@@ -1,0 +1,15 @@
+After unzipping this full repository into your GitHub Desktop working folder, commit and push to the existing PRIVATE GitHub repository.
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+sudo git pull --ff-only && sudo bash DEPLOY-PHASE-5.8.sh
+
+The script creates and checks a database backup BEFORE restarting application services. It prints the backup location and rollback command. Keep your existing .env and data folders.
+
+After deployment:
+1. Open one test studio: Business settings → Manage two bank accounts.
+2. Leave original bank-transfer fields alone; add the new bank as Account 2.
+3. Choose that bank in a quote template or test couple's quote.
+4. Use Save & preview as the couple, then Review quote email to see the summary.
+5. Open an existing invoice and confirm its original payment details remain correct.
+
+Legacy invoice bank details are captured from each studio's currently configured original fields at upgrade; previously overwritten historical bank details cannot be reconstructed.

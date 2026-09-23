@@ -1,3 +1,7 @@
+# Latest release: Phase 5.8
+
+Two bank choices per studio, saved invoice payment instructions, quote review summary and safe couple preview. See RELEASE-NOTES-PHASE-5.8.md and DEPLOY-PHASE-5.8-TRUENAS.txt.
+
 # Ivory Digital Booking SaaS
 
 A secure, multi-tenant booking platform built for wedding photographers and videographers.

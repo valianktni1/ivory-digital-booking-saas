@@ -3,6 +3,8 @@ import logging
 import hashlib
 from email.message import EmailMessage as RecoveryEmail
 from .models import PasswordReset, QuestionnaireDraft
+from .schemas import BankAccountsIn
+from .banking import (legacy_payment_details, selected_payment_details, freeze_tenant_payments, payment_for_booking, public_payment_details, bank_choices, ensure_bank_columns)
 from .schemas import PasswordResetRequestIn, PasswordResetIn
 import base64
 import email
@@ -29,7 +31,7 @@ import qrcode
 import qrcode.image.svg
 import httpx
 import reportlab
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -115,6 +117,15 @@ def audit(db: Session, action: str, subject_type: str, subject_id: str | None,
 
 
 DEFAULT_HELP_ARTICLES = (
+    {"slug": "manage-two-bank-accounts", "title": "How do I move to a new bank safely?",
+     "category": "Business settings", "contexts": ["brand", "quote-templates", "weddings", "enquiries"], "tour_key": "brand",
+     "keywords": ["bank", "accounts", "transition", "payments", "sort code"],
+     "body": "Open Business settings and choose Manage two bank accounts. Give each account a private label, account name, sort code and account number. Enable the accounts you want to offer, then save. Choose Bank account for this quote in a quote template or a couple’s quote. Labels are for your studio only.\n\nLeave your original Bank transfer details fields alone during the transition. Existing quotes and invoices keep saved payment details, even if bank settings change. Keeping the same bank selected on an existing draft retains its saved details. Choosing another bank changes that draft only. Accepted quotes cannot be changed this way."},
+    {"slug": "review-quote-and-couple-preview", "title": "How do I check a quote before sending?",
+     "category": "Quotes", "contexts": ["enquiries", "weddings", "quote-templates"], "tour_key": "weddings",
+     "keywords": ["preview", "summary", "compulsory", "discount", "bank", "quote"],
+     "body": "Use Save & preview as the couple to save the draft and open the same layout couples will see. Try the packages and optional extras to check totals. The preview cannot accept a quote, send email, submit forms or mark it as viewed.\n\nReview quote email shows a summary of packages, compulsory charges, optional extras, discounts and the saved bank details before you send. Each package total includes its required extras and adjustments; optional extras are added only when selected. The private bank label is also visible inside the booking and beside its invoices. Date clashes and private notes are never included in the couple preview."},
+
     {
         "slug": "start-setting-up-my-studio", "title": "Where should I start?",
         "category": "Getting started", "contexts": ["home"], "tour_key": "home",
@@ -530,6 +541,7 @@ def ensure_compatibility_columns(db: Session) -> None:
     """Add backwards-compatible release fields without replacing tenant data."""
     if db.bind is None:
         return
+    ensure_bank_columns(db)
     if db.bind.dialect.name == "postgresql":
         db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
         db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS full_description TEXT NOT NULL DEFAULT ''"))
@@ -635,6 +647,9 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         ensure_compatibility_columns(db)
+        for tenant in db.scalars(select(Tenant)).all():
+            freeze_tenant_payments(db, tenant)
+        db.commit()
         bootstrap_platform_admin(db)
         ensure_help_catalog(db)
         ensure_all_subscriptions(db)
@@ -646,7 +661,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.7.1-help",
+    version="0.5.8-banks",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -714,7 +729,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.22-phase-five-seven-one-help", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.23-phase-five-eight-banks", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1525,6 +1540,7 @@ def add_on_json(row: PackageAddOn) -> dict:
 def quote_template_json(row: QuoteTemplate) -> dict:
     return {
         "id": row.id, "name": row.name, "introduction": row.introduction or "",
+        "bank_account_id": row.bank_account_id,
         "package_ids": row.package_ids or [], "add_on_ids": row.add_on_ids or [],
         "required_add_on_ids": row.required_add_on_ids or [],
         "discount_ids": row.discount_ids or [],
@@ -1641,6 +1657,7 @@ def validate_add_on_packages(db: Session, tenant_id: str, payload: AddOnIn) -> N
 
 
 def validate_quote_template(db: Session, tenant_id: str, payload: QuoteTemplateIn) -> None:
+    selected_payment_details(db.get(Tenant, tenant_id), payload.bank_account_id)
     package_ids = set(payload.package_ids)
     found_packages = set(db.scalars(select(ServicePackage.id).where(
         ServicePackage.tenant_id == tenant_id,
@@ -1828,7 +1845,8 @@ def update_branding(payload: BrandingPatchIn, request: Request,
         raise HTTPException(403, "Owner or administrator access is required")
     tenant = db.get(Tenant, membership.tenant_id)
     tenant.display_name = payload.display_name.strip()
-    tenant.branding = payload.model_dump()
+    freeze_tenant_payments(db, tenant)
+    tenant.branding = {**(tenant.branding or {}), **payload.model_dump()}
     onboarding = dict(tenant.onboarding or {})
     onboarding["business"] = True
     onboarding["branding"] = True
@@ -2442,6 +2460,7 @@ def invoice_json(row: BookingInvoice, db: Session) -> dict:
             "status": row.status, "line_items": row.line_items or [],
             "payment_schedule": row.payment_schedule or [], "notes": row.notes,
             "void_reason": row.void_reason,
+            "payment_details": row.payment_details if row.payment_details is not None else legacy_payment_details(db.get(Tenant, row.tenant_id)),
             "payments": [{"id": item.id, "amount_pence": item.amount_pence,
                            "paid_date": item.paid_date.isoformat(),
                            "payment_type": item.payment_type,
@@ -2666,6 +2685,7 @@ def journey_json(db: Session, booking: Booking, journey: BookingJourney,
                                       "status": item.status, "payload": item.payload or {}}
                                      for item in actions]}
     if include_portal_url:
+        result["payment_details"] = payment_for_booking(db, db.get(Tenant, booking.tenant_id), journey)
         result["portal_url"] = portal_url(journey)
         result["private_date_conflicts"] = private_date_conflicts(db, booking.tenant_id, booking.event_date, booking.id)
     return result
@@ -3054,7 +3074,7 @@ def get_booking_journey(booking_id: str, context=Depends(studio_context),
     return result
 
 
-def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
+def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn, saved_payment=None) -> dict:
     package_rows = db.scalars(select(ServicePackage).where(
         ServicePackage.tenant_id == tenant_id,
         ServicePackage.id.in_(payload.package_ids),
@@ -3111,7 +3131,9 @@ def quote_snapshot(db: Session, tenant_id: str, payload: QuoteDraftIn) -> dict:
         custom_items.append({"label": discount.name,
                              "price_pence": -abs(discount.price_pence),
                              "catalog_add_on_id": discount.id})
-    return {"status": "draft", "packages": [package_json(item) for item in package_rows],
+    return {"status": "draft", "bank_account_id": payload.bank_account_id,
+            "payment_details": saved_payment if saved_payment is not None else selected_payment_details(db.get(Tenant, tenant_id), payload.bank_account_id),
+            "packages": [package_json(item) for item in package_rows],
             "add_ons": add_on_snapshots,
             "custom_items": custom_items, "message": payload.message,
             "expires_on": payload.expires_on.isoformat() if payload.expires_on else None,
@@ -3192,7 +3214,12 @@ def save_quote(booking_id: str, payload: QuoteDraftIn, request: Request,
     if journey.accepted_quote:
         raise HTTPException(409, "This quote has been accepted and its snapshot cannot be changed")
     existing = dict(journey.quote_state or {})
-    snapshot = quote_snapshot(db, tenant.id, payload)
+    if "bank_account_id" not in payload.model_fields_set:
+        payload.bank_account_id = existing.get("bank_account_id")
+    saved_payment = existing.get("payment_details") if existing.get("bank_account_id") == payload.bank_account_id else None
+    snapshot = quote_snapshot(db, tenant.id, payload, saved_payment=saved_payment)
+    if "payment_details" in existing and existing.get("bank_account_id") == payload.bank_account_id:
+        snapshot["payment_details"] = existing["payment_details"]
     for key in ("quote_template_id", "quote_template_name", "template_notes",
                 "contract_template_id", "questionnaire_form_types",
                 "auto_generate_invoice"):
@@ -3227,6 +3254,7 @@ def apply_quote_template(booking_id: str, template_id: str, request: Request,
     if not template:
         raise HTTPException(404, "Quote template not found")
     payload = QuoteDraftIn(
+        bank_account_id=template.bank_account_id,
         package_ids=template.package_ids or [],
         add_on_ids=template.add_on_ids or [],
         required_add_on_ids=template.required_add_on_ids or [],
@@ -3364,6 +3392,10 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
             enquiry.status = "quote_viewed"
         audit(db, "quote_viewed", "booking", booking.id, tenant_id=tenant.id, request=request)
         db.commit()
+    return couple_portal_data(db, tenant, booking, journey)
+
+
+def couple_portal_data(db, tenant, booking, journey):
     data = journey_json(db, booking, journey, include_portal_url=False)
     data["read_only"] = tenant.status == TenantStatus.SUSPENDED
     data["business"] = {"display_name": (tenant.branding or {}).get("display_name") or tenant.display_name,
@@ -3401,8 +3433,7 @@ def get_public_portal(raw_token: str, request: Request, db: Session = Depends(ge
     data["business"].update({"email": brand.get("invoice_email") or tenant.owner_email,
                              "phone": brand.get("invoice_phone", ""),
                              "has_logo": bool(email_brand and email_brand.logo_path and Path(email_brand.logo_path).is_file())})
-    data["payment_instructions"] = {key: brand.get(key, "") for key in
-        ("bank_account_name", "bank_sort_code", "bank_account_number", "invoice_payment_note")}
+    data["payment_instructions"] = public_payment_details(payment_for_booking(db, tenant, journey))
     for form in data["available_questionnaires"]:
         draft = db.scalar(select(QuestionnaireDraft).where(QuestionnaireDraft.tenant_id == tenant.id,
             QuestionnaireDraft.booking_id == booking.id, QuestionnaireDraft.form_type == form["form_type"]))
@@ -3462,6 +3493,8 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
                 "package": package, "add_ons": selected_addons,
                 "custom_items": quote.get("custom_items", []), "line_items": line_items,
                 "total_pence": total,
+                "payment_details": quote.get("payment_details", legacy_payment_details(tenant)),
+                "bank_account_id": quote.get("bank_account_id"),
                 "quote_template_id": quote.get("quote_template_id"),
                 "quote_template_name": quote.get("quote_template_name"),
                 "questionnaire_form_types": quote.get("questionnaire_form_types")}
@@ -3475,6 +3508,7 @@ def accept_public_quote(raw_token: str, payload: QuoteAcceptIn, request: Request
                              sequence=sequence, number=number,
                              booking_fee_due_date=fee_due_day,
                              due_date=journey.balance_due_date, total_pence=total,
+                             payment_details=accepted["payment_details"],
                              line_items=line_items,
                              payment_schedule=[{"label": "Booking fee", "amount_pence": journey.booking_fee_pence,
                                                 "due_date": fee_due_day.isoformat()},
@@ -3982,6 +4016,7 @@ def invoice_description_parts(value: str) -> list[tuple[str, bool]]:
 
 def invoice_pdf(tenant: Tenant, booking: Booking, invoice: BookingInvoice, db: Session) -> Response:
     branding = dict(tenant.branding or {})
+    branding.update(public_payment_details(invoice.payment_details if invoice.payment_details is not None else legacy_payment_details(tenant)))
     email_branding = db.get(TenantEmailBranding, tenant.id)
     client = db.scalar(select(Client).where(
         Client.id == booking.client_id, Client.tenant_id == tenant.id))
@@ -5742,6 +5777,7 @@ def public_invoice_json(invoice: BookingInvoice, db: Session) -> dict:
     result = {key: source[key] for key in (
         "id", "number", "issue_date", "booking_fee_due_date", "due_date",
         "total_pence", "paid_pence", "outstanding_pence", "status", "line_items", "payment_schedule")}
+    result["payment_instructions"] = public_payment_details(source["payment_details"])
     result["payments"] = [{key: payment[key] for key in ("amount_pence", "paid_date", "payment_type")}
                           for payment in source["payments"]]
     return result
@@ -5958,3 +5994,49 @@ def manager_operations(_: User = Depends(platform_admin), db: Session = Depends(
     except (OSError, ValueError, TypeError):
         pass
     return {"businesses": rows, "deployment_backup": backup, "database_restricted_role": not (role["rolsuper"] or role["rolbypassrls"]) if role else None}
+
+
+@app.get("/api/studio/bank-accounts")
+def get_bank_accounts(context=Depends(studio_context)):
+    _, _, tenant = context
+    return {"accounts": bank_choices(tenant)}
+
+@app.put("/api/studio/bank-accounts")
+def save_bank_accounts(payload: BankAccountsIn, request: Request,
+                       session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
+    membership, tenant = studio_write_context(session, db)
+    if membership.role not in {MembershipRole.OWNER, MembershipRole.ADMIN}:
+        raise HTTPException(403, "Owner or administrator access is required")
+    freeze_tenant_payments(db, tenant)
+    tenant.branding = {**(tenant.branding or {}), "bank_accounts": [r.model_dump() for r in payload.accounts]}
+    audit(db, "bank_accounts_updated", "tenant", tenant.id, actor=session.user, tenant_id=tenant.id, request=request)
+    db.commit()
+    return {"accounts": bank_choices(tenant)}
+
+@app.get("/api/studio/bookings/{booking_id}/couple-preview-data")
+def couple_preview_data(booking_id: str, context=Depends(studio_context), db: Session = Depends(get_db)):
+    _, _, tenant = context
+    booking = studio_booking(db, tenant.id, booking_id)
+    journey = booking_journey(db, booking)
+    data = couple_portal_data(db, tenant, booking, journey)
+    data["preview"] = True
+    data["quote"] = dict(data["quote"])
+    if data["quote"].get("status") == "draft":
+        data["quote"]["status"] = "sent"
+    return data
+
+_PREVIEW_ROOT = Path(__file__).resolve().parent.parent / "client"
+
+@app.get("/api/studio/bookings/{booking_id}/couple-preview", response_class=HTMLResponse)
+def couple_preview_page(booking_id: str, context=Depends(studio_context), db: Session = Depends(get_db)):
+    studio_booking(db, context[2].id, booking_id)
+    source = (_PREVIEW_ROOT / "index.html").read_text()
+    for name in ("styles.css", "portal.css", "places.js", "app.js"):
+        source = source.replace('/' + name, '/api/studio/preview-assets/' + name)
+    return HTMLResponse(source)
+
+@app.get("/api/studio/preview-assets/{name}")
+def couple_preview_asset(name: str, context=Depends(studio_context)):
+    if name not in {"styles.css", "portal.css", "places.js", "app.js"}:
+        raise HTTPException(404, "Preview asset not found")
+    return FileResponse(_PREVIEW_ROOT / name)

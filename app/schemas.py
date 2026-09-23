@@ -288,6 +288,7 @@ class QuoteEmailSendIn(BaseModel):
 
 
 class QuoteDraftIn(BaseModel):
+    bank_account_id: Literal["account1", "account2"] | None = None
     package_ids: list[str] = Field(default_factory=list, max_length=20)
     add_on_ids: list[str] = Field(default_factory=list, max_length=60)
     required_add_on_ids: list[str] = Field(default_factory=list, max_length=60)
@@ -322,6 +323,7 @@ class QuoteDraftIn(BaseModel):
 
 
 class QuoteTemplateIn(BaseModel):
+    bank_account_id: Literal["account1", "account2"] | None = None
     name: str = Field(min_length=2, max_length=160)
     introduction: str = Field(default="", max_length=4000)
     package_ids: list[str] = Field(default_factory=list, min_length=1, max_length=20)
@@ -575,3 +577,26 @@ class HelpArticleIn(BaseModel):
     @classmethod
     def clean_help_lists(cls, values: list[str]) -> list[str]:
         return [str(value).strip().lower()[:100] for value in values if str(value).strip()]
+
+
+class BankAccountIn(BaseModel):
+    id: Literal["account1", "account2"]
+    label: str = Field(min_length=1, max_length=80)
+    bank_account_name: str = Field(min_length=1, max_length=160)
+    bank_sort_code: str = Field(pattern=r"^(?:[0-9]{6}|[0-9]{2}-[0-9]{2}-[0-9]{2})$")
+    bank_account_number: str = Field(pattern=r"^[0-9]{8}$")
+
+    @field_validator("label", "bank_account_name", mode="before")
+    @classmethod
+    def strip_bank_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+class BankAccountsIn(BaseModel):
+    accounts: list[BankAccountIn] = Field(default_factory=list, max_length=2)
+
+    @field_validator("accounts")
+    @classmethod
+    def unique_slots(cls, rows):
+        if len({row.id for row in rows}) != len(rows):
+            raise ValueError("Each bank account slot can only be supplied once")
+        return rows
