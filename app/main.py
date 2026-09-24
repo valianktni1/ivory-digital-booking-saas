@@ -465,7 +465,8 @@ def ensure_starter_email_templates(db: Session, tenant: Tenant) -> None:
 
 
 from .help_phase57 import PHASE57_HELP_ARTICLES
-DEFAULT_HELP_ARTICLES = DEFAULT_HELP_ARTICLES + PHASE57_HELP_ARTICLES
+from .help_phase59 import PHASE59_HELP_ARTICLES
+DEFAULT_HELP_ARTICLES = DEFAULT_HELP_ARTICLES + PHASE57_HELP_ARTICLES + PHASE59_HELP_ARTICLES
 
 
 def ensure_help_catalog(db: Session) -> None:
@@ -541,6 +542,8 @@ def ensure_compatibility_columns(db: Session) -> None:
     """Add backwards-compatible release fields without replacing tenant data."""
     if db.bind is None:
         return
+    from .payments import ensure_payment_columns
+    ensure_payment_columns(db)
     ensure_bank_columns(db)
     if db.bind.dialect.name == "postgresql":
         db.execute(text("ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS information_url VARCHAR(1000) NOT NULL DEFAULT ''"))
@@ -647,12 +650,15 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         ensure_compatibility_columns(db)
+        set_database_tenant(db, platform_admin=True)
         for tenant in db.scalars(select(Tenant)).all():
             freeze_tenant_payments(db, tenant)
         db.commit()
         bootstrap_platform_admin(db)
         ensure_help_catalog(db)
+        set_database_tenant(db, platform_admin=True)
         ensure_all_subscriptions(db)
+        set_database_tenant(db, platform_admin=True)
         ensure_all_questionnaire_templates(db)
         install_postgres_rls(db)
         db.commit()
@@ -661,7 +667,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.8-banks",
+    version="0.5.9-payments",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -684,6 +690,14 @@ def session_dependency(request: Request, db: Session = Depends(get_db)) -> UserS
     row = find_session(db, request.cookies.get(SESSION_COOKIE))
     if not row:
         raise HTTPException(401, "Please sign in")
+    row.user._active_tenant_id = row.active_tenant_id
+    expected = request.headers.get("x-ivory-business")
+    if expected and request.url.path.startswith("/api/studio/") and request.url.path != "/api/studio/businesses/switch":
+        actual = row.active_tenant_id
+        if not actual:
+            actual = db.scalar(select(Membership.tenant_id).where(Membership.user_id == row.user_id).order_by(Membership.created_at).limit(1))
+        if expected != actual:
+            raise HTTPException(409, "The business changed in another tab. Refresh before continuing.")
     return row
 
 
@@ -729,7 +743,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.23-phase-five-eight-banks", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.23-phase-five-nine-payments", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -1052,6 +1066,7 @@ def change_tenant_status(tenant_id: str, payload: TenantStatusIn, request: Reque
         raise HTTPException(404, "Business not found")
     old = tenant.status.value
     tenant.status = TenantStatus(payload.status)
+    tenant.onboarding = {**(tenant.onboarding or {}), "admin_access_hold": tenant.status in {TenantStatus.SUSPENDED, TenantStatus.CANCELLED}}
     subscription = ensure_subscription(db, tenant)
     subscription.billing_status = tenant.status.value
     if tenant.status in {TenantStatus.SUSPENDED, TenantStatus.CANCELLED}:
@@ -1157,6 +1172,9 @@ def update_tenant_billing(tenant_id: str, payload: BillingSettingsIn, request: R
     if not tenant:
         raise HTTPException(404, "Business not found")
     subscription = ensure_subscription(db, tenant)
+    from .payments import prevent_pending_subscription_change, release_cancelled_subscription
+    release_cancelled_subscription(db, subscription)
+    prevent_pending_subscription_change(db, tenant.id)
     before = subscription_json(subscription, tenant)
     subscription.plan_name = payload.plan_name.strip()
     subscription.price_pence = payload.price_pence
@@ -1182,6 +1200,9 @@ def extend_tenant_trial(tenant_id: str, payload: TrialExtensionIn, request: Requ
     tenant.trial_ends_at = utcnow() + timedelta(days=payload.days)
     tenant.automations_paused = True
     subscription = ensure_subscription(db, tenant)
+    from .payments import release_cancelled_subscription
+    release_cancelled_subscription(db, subscription)
+    tenant.onboarding = {**(tenant.onboarding or {}), "admin_access_hold": False}
     subscription.billing_status = "trial"
     subscription.trial_days_granted = payload.days
     subscription.next_payment_due = None
@@ -1218,6 +1239,7 @@ def record_platform_payment(tenant_id: str, payload: PlatformPaymentIn, request:
     if payload.covers_until:
         subscription.next_payment_due = payload.covers_until
     if payload.reactivate:
+        tenant.onboarding = {**(tenant.onboarding or {}), "admin_access_hold": False}
         tenant.status = TenantStatus.ACTIVE
         subscription.billing_status = "active"
         subscription.suspended_at = None
@@ -1242,6 +1264,7 @@ def suspend_tenant_account(tenant_id: str, payload: AccountAccessIn, request: Re
     if not tenant:
         raise HTTPException(404, "Business not found")
     old = tenant.status.value
+    tenant.onboarding = {**(tenant.onboarding or {}), "admin_access_hold": True}
     tenant.status = TenantStatus.SUSPENDED
     tenant.automations_paused = True
     subscription = ensure_subscription(db, tenant)
@@ -1265,6 +1288,7 @@ def reactivate_tenant_account(tenant_id: str, payload: AccountAccessIn, request:
     if not tenant:
         raise HTTPException(404, "Business not found")
     old = tenant.status.value
+    tenant.onboarding = {**(tenant.onboarding or {}), "admin_access_hold": False}
     tenant.status = TenantStatus.ACTIVE
     tenant.automations_paused = True
     subscription = ensure_subscription(db, tenant)
@@ -3615,7 +3639,7 @@ def record_payment(invoice_id: str, payload: PaymentRecordIn, request: Request,
                    session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
     membership, tenant = studio_write_context(session, db)
     invoice = db.scalar(select(BookingInvoice).where(
-        BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id))
+        BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id).with_for_update())
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     if invoice.status == "void":
@@ -3623,6 +3647,8 @@ def record_payment(invoice_id: str, payload: PaymentRecordIn, request: Request,
     outstanding = invoice.total_pence - invoice.paid_pence
     if payload.amount_pence > outstanding:
         raise HTTPException(422, "The payment is more than the outstanding invoice balance")
+    from .payments import expire_invoice_checkout
+    expire_invoice_checkout(db, invoice)
     payment = BookingPayment(tenant_id=tenant.id, invoice_id=invoice.id, **payload.model_dump())
     db.add(payment); invoice.paid_pence += payload.amount_pence
     invoice.status = "paid" if invoice.paid_pence >= invoice.total_pence else "part_paid"
@@ -3653,11 +3679,13 @@ def void_invoice(invoice_id: str, payload: InvoiceVoidIn, request: Request,
                  session: UserSession = Depends(require_csrf), db: Session = Depends(get_db)):
     membership, tenant = studio_write_context(session, db)
     invoice = db.scalar(select(BookingInvoice).where(
-        BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id))
+        BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id).with_for_update())
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     if invoice.paid_pence:
         raise HTTPException(409, "A paid or part-paid invoice must be corrected with an auditable refund or credit, not deleted")
+    from .payments import expire_invoice_checkout
+    expire_invoice_checkout(db, invoice)
     invoice.status = "void"; invoice.void_reason = payload.reason
     audit(db, "invoice_voided", "invoice", invoice.id, actor=session.user,
           tenant_id=tenant.id, request=request, detail={"reason": payload.reason})
@@ -4372,7 +4400,7 @@ def questionnaire_pdf(tenant: Tenant, booking: Booking,
 def download_studio_invoice(invoice_id: str, context=Depends(studio_context), db: Session = Depends(get_db)):
     _, _, tenant = context
     invoice = db.scalar(select(BookingInvoice).where(
-        BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id))
+        BookingInvoice.id == invoice_id, BookingInvoice.tenant_id == tenant.id).with_for_update())
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     return invoice_pdf(tenant, studio_booking(db, tenant.id, invoice.booking_id), invoice, db)
@@ -5777,6 +5805,9 @@ def public_invoice_json(invoice: BookingInvoice, db: Session) -> dict:
     result = {key: source[key] for key in (
         "id", "number", "issue_date", "booking_fee_due_date", "due_date",
         "total_pence", "paid_pence", "outstanding_pence", "status", "line_items", "payment_schedule")}
+    from .payments import card_available
+    result["card_test_mode"] = not settings.stripe_live_mode
+    result["card_available"] = card_available(db, invoice.tenant_id) and invoice.status not in {"paid", "void"}
     result["payment_instructions"] = public_payment_details(source["payment_details"])
     result["payments"] = [{key: payment[key] for key in ("amount_pence", "paid_date", "payment_type")}
                           for payment in source["payments"]]
@@ -6040,3 +6071,8 @@ def couple_preview_asset(name: str, context=Depends(studio_context)):
     if name not in {"styles.css", "portal.css", "places.js", "app.js"}:
         raise HTTPException(404, "Preview asset not found")
     return FileResponse(_PREVIEW_ROOT / name)
+
+
+from .payments import register_routes as register_payment_routes
+import sys as _sys
+register_payment_routes(_sys.modules[__name__])

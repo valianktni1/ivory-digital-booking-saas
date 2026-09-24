@@ -1,6 +1,6 @@
-# Latest release: Phase 5.8
+# Latest release: Phase 5.9
 
-Two bank choices per studio, saved invoice payment instructions, quote review summary and safe couple preview. See RELEASE-NOTES-PHASE-5.8.md and DEPLOY-PHASE-5.8-TRUENAS.txt.
+Two isolated businesses per seat, free or paid second-business access, and optional Stripe subscriptions and couple card payments alongside bank transfer. See RELEASE-NOTES-PHASE-5.9.md, STRIPE-SETUP-PHASE-5.9.md and DEPLOY-PHASE-5.9-TRUENAS.txt. Stripe is disabled until configured.
 
 # Ivory Digital Booking SaaS
 
@@ -14,7 +14,7 @@ The product is split into three deliberately separate experiences:
 
 The platform never connects to or reuses the Weddings By Mark production database, uploads, credentials, mailbox or client records.
 
-## Current release — Phase 5.7.1 (help refresh)
+## Previous release — Phase 5.7.1 (help refresh)
 
 Phase 5.7 adds Studio-only date warnings, a deliberately restricted client API,
 itemised live quote totals, saved questionnaire drafts, account recovery,

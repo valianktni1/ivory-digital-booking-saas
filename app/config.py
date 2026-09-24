@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     google_calendar_client_secret: str = ""
     google_calendar_redirect_uri: str = ""
     google_calendar_timeout_seconds: int = Field(default=20, ge=5, le=60)
+    stripe_enabled: bool = False
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_connect_webhook_secret: str = ""
+    stripe_connect_client_id: str = ""
+    stripe_live_mode: bool = False
+    stripe_api_version: str = "2025-02-24.acacia"
     google_maps_browser_api_key: str = ""
     google_places_region_codes: str = "gb"
 

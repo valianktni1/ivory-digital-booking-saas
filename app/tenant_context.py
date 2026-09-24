@@ -21,6 +21,7 @@ def set_database_tenant(db: Session, tenant_id: str | None = None,
 
 
 def membership_for(db: Session, user: User, tenant_id: str | None = None) -> Membership:
+    tenant_id = tenant_id or getattr(user, "_active_tenant_id", None)
     stmt = select(Membership).where(Membership.user_id == user.id)
     if tenant_id:
         stmt = stmt.where(Membership.tenant_id == tenant_id)
@@ -57,7 +58,8 @@ def install_postgres_rls(db: Session) -> None:
                        "booking_notes", "studio_tasks", "booking_documents",
                        "email_templates", "tenant_email_branding", "email_messages",
                        "studio_notifications",
-                       "tenant_subscriptions", "platform_billing_payments"):
+                       "tenant_subscriptions", "platform_billing_payments", "stripe_connections",
+                       "stripe_oauth_states", "stripe_checkouts", "stripe_billing_receipts"):
         db.execute(text(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY"))
         db.execute(text(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY"))
         db.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table_name}"))

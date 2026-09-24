@@ -33,6 +33,7 @@ class MembershipRole(str, enum.Enum):
 class Tenant(Base):
     __tablename__ = "tenants"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    primary_tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, unique=True)
     slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(160))
     owner_email: Mapped[str] = mapped_column(String(254), index=True)
@@ -92,6 +93,7 @@ class Invitation(Base):
 class UserSession(Base):
     __tablename__ = "user_sessions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    active_tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     csrf_hash: Mapped[str] = mapped_column(String(64))
@@ -754,3 +756,54 @@ class QuestionnaireDraft(Base):
     form_type: Mapped[str] = mapped_column(String(50))
     answers: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class StripeConnection(Base):
+    __tablename__ = "stripe_connections"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(200), unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    charges_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    livemode: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class StripeOAuthState(Base):
+    __tablename__ = "stripe_oauth_states"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StripeCheckout(Base):
+    __tablename__ = "stripe_checkouts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    invoice_id: Mapped[str | None] = mapped_column(ForeignKey("booking_invoices.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    account_id: Mapped[str] = mapped_column(String(200), default="")
+    amount_pence: Mapped[int] = mapped_column()
+    # Persist request before contacting Stripe: retries use identical parameters and key.
+    request_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    session_id: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
+    payment_intent_id: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
+    subscription_id: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
+    url: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    refunded_pence: Mapped[int] = mapped_column(default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class StripeEvent(Base):
+    # Internal receipt ledger. No endpoint exposes events or their payloads.
+    __tablename__ = "stripe_events"
+    id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class StripeBillingReceipt(Base):
+    __tablename__ = "stripe_billing_receipts"
+    id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)

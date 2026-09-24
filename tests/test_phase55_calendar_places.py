@@ -120,8 +120,8 @@ def test_phase55_frontends_and_security_policy_are_wired():
     assert "venue_details" in client and "IvoryPlaces" in client
     assert "PlaceAutocompleteElement" in places and "includedRegionCodes" in places
     assert "Use this calendar" in studio and "Get directions" in studio
-    assert "/places.js?v=phase-five-eight-banks" in client_html
-    assert "/v55.js?v=phase-five-eight-banks" in studio_html
+    assert "/places.js?v=phase-five-nine-payments" in client_html
+    assert "/v55.js?v=phase-five-nine-payments" in studio_html
     assert "#final-timings" in client
     assert "questionnaire-final_timings" in client
     assert "＋ New email" in studio_v54

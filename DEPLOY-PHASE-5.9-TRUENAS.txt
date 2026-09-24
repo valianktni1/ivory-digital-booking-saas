@@ -1,0 +1,29 @@
+IVORY DIGITAL SAAS — PHASE 5.9
+
+1. Extract this full repository into your existing local GitHub Desktop checkout.
+   Keep your existing .git folder and server .env. Do not copy over live data folders.
+2. Review, commit and push through GitHub Desktop to the existing PRIVATE repository.
+3. In the TrueNAS shell run:
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+sudo git pull --ff-only && sudo bash DEPLOY-PHASE-5.9.sh
+
+The script checks that the complete release is present, saves and checks a database
+archive, retains current application images for rollback, rebuilds the application,
+and verifies the release on the three existing ports. It uses your existing private
+GitHub authentication; no repository visibility changes are needed.
+
+The backend must become healthy before the worker starts against the upgraded schema.
+Database and Redis volumes are retained. The script prints the backup and rollback path.
+
+After deployment:
+- Manager: open a business, then Businesses on this seat (or Billing & access,
+  then Manage second business). Create the second business free or set its price.
+- Studio: choose Current business at the top. Owners can open Payments & subscription.
+- Stripe is OFF by default. Read STRIPE-SETUP-PHASE-5.9.md for staging and live setup.
+  Business switching/free grants do not require Stripe configuration.
+- Bank transfer stays available. Existing invoices retain their saved bank details.
+
+Do not restore a database backup casually after new payments have arrived.
+Use the printed image rollback command for an application rollback, then reconcile
+any payment/webhook activity before considering a database restore.

@@ -1,6 +1,7 @@
 const $ = (q) => document.querySelector(q);
 const csrf = () => document.cookie.split('; ').find(v => v.startsWith('ivory_booking_csrf='))?.split('=')[1] || '';
 let dashboard;
+let businessSelection=null;
 let packages=[], addOns=[], quoteTemplates=[], workflows=[], weddings=[], questionnaireTemplates=[];
 let enquiryForm, mailbox, activeJourney, calendarData, todayData;
 let currentSection='home', helpCatalog=[], tourSteps=[], tourIndex=0;
@@ -11,10 +12,11 @@ $('#step-trigger').closest('label').firstChild.textContent='Trigger - when this 
 
 async function api(path, options = {}) {
   const headers = {...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})};
+  if(businessSelection && path.startsWith('/api/studio/'))headers['X-Ivory-Business']=businessSelection;
   if (!['GET','HEAD'].includes((options.method || 'GET').toUpperCase())) headers['X-CSRF-Token'] = csrf();
   const response = await fetch(path, {...options, headers, credentials:'same-origin'});
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(formatApiError(body.detail));
+  if (!response.ok){const err=new Error(formatApiError(body.detail));err.status=response.status;throw err;}
   return body;
 }
 
@@ -69,8 +71,8 @@ async function showSection(name){currentSection=name;['home','enquiries','weddin
 function closeMenu(){$('#sidebar').classList.remove('open');$('#scrim').classList.add('hidden')}
 
 async function openStudio(){
-  try{const calendarResult=new URLSearchParams(location.search).get('google_calendar');dashboard=await api('/api/studio/dashboard');const wanted=`/${dashboard.tenant.slug}`;if(location.pathname!==wanted||location.search)history.replaceState({},'',wanted);$('#auth-view').classList.add('hidden');$('#studio-view').classList.remove('hidden');render();await Promise.all([loadToday(),updateUnreadCount()]);if(calendarResult){await showSection('calendar');toast(calendarResult==='connected'?'Google Calendar connected. Now choose the calendar this studio should use.':'Google Calendar could not be connected. Please try again.',calendarResult!=='connected')}}
-  catch{$('#auth-view').classList.remove('hidden');$('#studio-view').classList.add('hidden')}
+  try{await loadBusinessAccess();const stripeResult=new URLSearchParams(location.search).get('stripe');const calendarResult=new URLSearchParams(location.search).get('google_calendar');dashboard=await api('/api/studio/dashboard');const wanted=`/${dashboard.tenant.slug}`;if(location.pathname!==wanted||location.search)history.replaceState({},'',wanted);$('#auth-view').classList.add('hidden');$('#studio-view').classList.remove('hidden');render();await Promise.all([loadToday(),updateUnreadCount()]);if(stripeResult)await openPayments();if(calendarResult){await showSection('calendar');toast(calendarResult==='connected'?'Google Calendar connected. Now choose the calendar this studio should use.':'Google Calendar could not be connected. Please try again.',calendarResult!=='connected')}}
+  catch(err){if(err.status===403&&businessSelection){await showBusinessGate();return;}$('#auth-view').classList.remove('hidden');$('#studio-view').classList.add('hidden')}
 }
 
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;button.textContent='Opening your studio…';$('#auth-error').textContent='';try{const result=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value})});if(result.destination!=='studio')throw new Error('Please use Ivory Digital Manager for this account.');await openStudio()}catch(err){$('#auth-error').textContent=err.message;button.disabled=false;button.textContent='Open my studio'}});
