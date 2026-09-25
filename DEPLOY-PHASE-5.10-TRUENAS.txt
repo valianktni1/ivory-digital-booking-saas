@@ -1,0 +1,27 @@
+IVORY DIGITAL SAAS — PHASE 5.10 ACCOUNTING PILOT
+
+1. Extract this full repository into your existing GitHub Desktop checkout.
+   Keep your .git folder and existing server .env; do not overwrite live data.
+2. Review, commit and push to the existing PRIVATE repository.
+3. Run in the TrueNAS shell:
+
+cd /mnt/apps/dockge/data/tenantsbookingsystem2026
+sudo git pull --ff-only && sudo bash DEPLOY-PHASE-5.10.sh
+
+The script checks the release, saves and checks a database archive, retains the
+running application images for rollback, rebuilds the application and verifies
+all three existing ports. It uses existing private GitHub authentication.
+No public/private repository change is required.
+
+The backend becomes healthy before the worker starts on the upgraded schema.
+Database and Redis volumes are retained. Backup and rollback paths are printed.
+Do not restore the database casually after new payments have arrived; use the
+printed application-image rollback command and reconcile activity first.
+
+Accounting is OFF by default. Deployment alone does not send accounting records.
+Read ACCOUNTING-SETUP-PHASE-5.10.md to register QuickBooks/Xero apps, configure
+the server and complete sandbox/demo checks before enabling real exports.
+Then business owners open Accounting at the top of Studio.
+
+Sage is planned for later. Stripe and bank transfers remain available.
+The Studio help articles and Home tour include the new accounting controls.

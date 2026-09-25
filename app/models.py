@@ -807,3 +807,44 @@ class StripeBillingReceipt(Base):
     __tablename__ = "stripe_billing_receipts"
     id: Mapped[str] = mapped_column(String(200), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+
+
+class AccountingConnection(Base):
+    __tablename__ = 'accounting_connections'
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20))
+    company_id: Mapped[str] = mapped_column(String(100), default='')
+    company_name: Mapped[str] = mapped_column(String(200), default='')
+    tokens_encrypted: Mapped[str] = mapped_column(Text, default='')
+    choices: Mapped[list] = mapped_column(JSON, default=list)
+    mapping: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_sync: Mapped[bool] = mapped_column(Boolean, default=False)
+    sync_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AccountingOAuthState(Base):
+    __tablename__ = 'accounting_oauth_states'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    provider: Mapped[str] = mapped_column(String(20))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AccountingExport(Base):
+    __tablename__ = 'accounting_exports'
+    __table_args__ = (UniqueConstraint('tenant_id','kind','source_id', name='uq_accounting_source'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    source_id: Mapped[str] = mapped_column(String(36))
+    remote_id: Mapped[str] = mapped_column(String(100), default='')
+    state: Mapped[str] = mapped_column(String(20), default='ready')
+    fingerprint: Mapped[str] = mapped_column(String(64), default='')
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    message: Mapped[str] = mapped_column(String(500), default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

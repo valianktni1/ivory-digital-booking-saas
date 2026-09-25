@@ -1,6 +1,8 @@
-# Latest release: Phase 5.9
+# Latest release: Phase 5.10 — accounting pilot
 
-Two isolated businesses per seat, free or paid second-business access, and optional Stripe subscriptions and couple card payments alongside bank transfer. See RELEASE-NOTES-PHASE-5.9.md, STRIPE-SETUP-PHASE-5.9.md and DEPLOY-PHASE-5.9-TRUENAS.txt. Stripe is disabled until configured.
+Optional QuickBooks Online and Xero connections per business, with outbound invoice and recorded-payment exports, review controls and opt-in automatic syncing. Disabled until configured and tested with the providers. Sage Accounting is planned, not included. See RELEASE-NOTES-PHASE-5.10.md, ACCOUNTING-SETUP-PHASE-5.10.md and DEPLOY-PHASE-5.10-TRUENAS.txt.
+
+Includes the Phase 5.9 two-business and Stripe features. Existing bank transfer options remain available.
 
 # Ivory Digital Booking SaaS
 

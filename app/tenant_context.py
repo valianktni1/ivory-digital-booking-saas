@@ -59,7 +59,8 @@ def install_postgres_rls(db: Session) -> None:
                        "email_templates", "tenant_email_branding", "email_messages",
                        "studio_notifications",
                        "tenant_subscriptions", "platform_billing_payments", "stripe_connections",
-                       "stripe_oauth_states", "stripe_checkouts", "stripe_billing_receipts"):
+                       "stripe_oauth_states", "stripe_checkouts", "stripe_billing_receipts", "accounting_connections",
+                       "accounting_oauth_states", "accounting_exports"):
         db.execute(text(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY"))
         db.execute(text(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY"))
         db.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table_name}"))

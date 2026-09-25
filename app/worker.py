@@ -210,6 +210,8 @@ def run() -> None:
             process_billing_statuses(now)
             process_workflow_actions()
             process_owner_notifications()
+            from .accounting import process_accounting
+            process_accounting(lambda: redis.set('ivory-booking:worker-heartbeat', datetime.now(timezone.utc).isoformat(), ex=180))
             redis.set("ivory-booking:worker-heartbeat", datetime.now(timezone.utc).isoformat(), ex=180)
         except Exception:
             logging.getLogger(__name__).exception("Worker cycle failed; pending work is retained")

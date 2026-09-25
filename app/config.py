@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     google_calendar_client_secret: str = ""
     google_calendar_redirect_uri: str = ""
     google_calendar_timeout_seconds: int = Field(default=20, ge=5, le=60)
+    accounting_enabled: bool = False
+    xero_client_id: str = ''
+    xero_client_secret: str = ''
+    quickbooks_client_id: str = ''
+    quickbooks_client_secret: str = ''
+    quickbooks_sandbox: bool = True
     stripe_enabled: bool = False
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""

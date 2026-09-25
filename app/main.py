@@ -466,7 +466,8 @@ def ensure_starter_email_templates(db: Session, tenant: Tenant) -> None:
 
 from .help_phase57 import PHASE57_HELP_ARTICLES
 from .help_phase59 import PHASE59_HELP_ARTICLES
-DEFAULT_HELP_ARTICLES = DEFAULT_HELP_ARTICLES + PHASE57_HELP_ARTICLES + PHASE59_HELP_ARTICLES
+from .help_phase510 import PHASE510_HELP_ARTICLES
+DEFAULT_HELP_ARTICLES = DEFAULT_HELP_ARTICLES + PHASE57_HELP_ARTICLES + PHASE59_HELP_ARTICLES + PHASE510_HELP_ARTICLES
 
 
 def ensure_help_catalog(db: Session) -> None:
@@ -667,7 +668,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Ivory Digital Booking System",
-    version="0.5.9-payments",
+    version="0.5.10-accounting",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -743,7 +744,7 @@ def set_session_cookie(response: Response, token: str, csrf: str) -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "build": "2026.09.23-phase-five-nine-payments", "service": "ivory-booking-saas"}
+    return {"status": "ok", "build": "2026.09.24-phase-five-ten-accounting", "service": "ivory-booking-saas"}
 
 
 @app.post("/api/auth/login")
@@ -6076,3 +6077,6 @@ def couple_preview_asset(name: str, context=Depends(studio_context)):
 from .payments import register_routes as register_payment_routes
 import sys as _sys
 register_payment_routes(_sys.modules[__name__])
+
+from .accounting import register_routes as register_accounting_routes
+register_accounting_routes(_sys.modules[__name__])
